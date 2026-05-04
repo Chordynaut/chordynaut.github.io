@@ -15,7 +15,30 @@ function SolanaMark({ className = '' } = {}) {
 
 const CHORDYSOL_SIGNED_BUNDLE_SCHEMA = 'chordysol.signed_bundle.v1';
 const CHORDYSOL_APP_VERSION = '2026-05-04-signed-bundle-v1';
+const CHORDYSOL_TUTORIAL_SEEN_KEY = 'chordysol.tutorialSeen.v1';
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const CHORDYSOL_TUTORIAL_STEPS = [
+    {
+        title: '1. Connect your Solana wallet',
+        body: 'Use the wallet button in the top bar. Chordysol uses your wallet to sign the finished bundle; it does not write anything onchain.'
+    },
+    {
+        title: '2. Play the instrument',
+        body: 'Tap a chord on the left, then strum the large pad. Your notes, timing, mode, tempo, and settings become the performance data.'
+    },
+    {
+        title: '3. Record something',
+        body: 'Press the red record button, play a short piece, then press record again to stop. You can also use the loop controls if you prefer.'
+    },
+    {
+        title: '4. Sign and save',
+        body: 'Open the download panel, choose sign bundle, approve the wallet signature, and save the zip with audio, performance data, and receipt.'
+    },
+    {
+        title: '5. Verify another bundle',
+        body: 'Use import signed bundle to check someone else\'s zip. Chordysol recalculates hashes and confirms which Solana address signed it.'
+    }
+];
 
 function bytesToHex(bytes) {
     return Array.from(bytes).map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -998,6 +1021,35 @@ function AboutOverlay({ onClose }) {
     );
 }
 
+function TutorialBubble({ step, index, total, onNext, onSkip }) {
+    return React.createElement('div', {
+        className: 'tutorial-layer',
+        role: 'dialog',
+        'aria-live': 'polite',
+        'aria-label': 'Chordysol quick start'
+    },
+        React.createElement('div', {
+            className: 'tutorial-bubble'
+        },
+            React.createElement('div', { className: 'tutorial-kicker' }, `Quick start ${index + 1}/${total}`),
+            React.createElement('h3', null, step.title),
+            React.createElement('p', null, step.body),
+            React.createElement('div', { className: 'tutorial-actions' },
+                React.createElement('button', {
+                    type: 'button',
+                    className: 'tutorial-skip',
+                    onClick: onSkip
+                }, 'skip'),
+                React.createElement('button', {
+                    type: 'button',
+                    className: 'tutorial-next',
+                    onClick: onNext
+                }, index + 1 === total ? 'start playing' : 'next')
+            )
+        )
+    );
+}
+
 function getRowColor(quality, index) {
     if (defaultQualities.includes(quality)) return "";
     const hues = [200, 260, 320, 30, 90, 140];
@@ -1035,6 +1087,8 @@ function App() {
     const [showIOSOverlay, setShowIOSOverlay] = useState(isIOS());
     const [showConfig, setShowConfig] = useState(false);
     const [showAbout, setShowAbout] = useState(false);
+    const [tutorialStepIndex, setTutorialStepIndex] = useState(-1);
+    const shouldStartTutorialAfterAboutRef = useRef(false);
     
     // Countdown state
     const [countdown, setCountdown] = useState(0);
@@ -1160,8 +1214,25 @@ function App() {
 
     const beatsPerBar = useMemo(() => parseInt(timeSignature.split("/")[0]), [timeSignature]);
 
-    // Auto-open About overlay on first load
+    const finishTutorial = useCallback(() => {
+        localStorage.setItem(CHORDYSOL_TUTORIAL_SEEN_KEY, 'yes');
+        setTutorialStepIndex(-1);
+    }, []);
+
+    const advanceTutorial = useCallback(() => {
+        setTutorialStepIndex(current => {
+            if (current + 1 >= CHORDYSOL_TUTORIAL_STEPS.length) {
+                localStorage.setItem(CHORDYSOL_TUTORIAL_SEEN_KEY, 'yes');
+                return -1;
+            }
+            return current + 1;
+        });
+    }, []);
+
     useEffect(() => {
+        const hasSeenTutorial = localStorage.getItem(CHORDYSOL_TUTORIAL_SEEN_KEY) === 'yes';
+        if (hasSeenTutorial) return undefined;
+        shouldStartTutorialAfterAboutRef.current = true;
         const timer = setTimeout(() => {
             setShowAbout(true);
         }, 400);
@@ -2227,7 +2298,15 @@ function App() {
     }
 
     if (showAbout) {
-        return React.createElement(AboutOverlay, { onClose: () => setShowAbout(false) });
+        return React.createElement(AboutOverlay, {
+            onClose: () => {
+                setShowAbout(false);
+                if (shouldStartTutorialAfterAboutRef.current) {
+                    shouldStartTutorialAfterAboutRef.current = false;
+                    setTutorialStepIndex(0);
+                }
+            }
+        });
     }
 
     return React.createElement('div', {
@@ -2989,6 +3068,14 @@ function App() {
                 event.target.value = '';
                 if (file) await importSignedBundle(file);
             }
+        }),
+
+        tutorialStepIndex >= 0 && React.createElement(TutorialBubble, {
+            step: CHORDYSOL_TUTORIAL_STEPS[tutorialStepIndex],
+            index: tutorialStepIndex,
+            total: CHORDYSOL_TUTORIAL_STEPS.length,
+            onNext: advanceTutorial,
+            onSkip: finishTutorial
         })
     );
 }
