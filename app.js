@@ -13,6 +13,108 @@ function SolanaMark({ className = '' } = {}) {
     );
 }
 
+const CHORDYSOL_SIGNED_BUNDLE_SCHEMA = 'chordysol.signed_bundle.v1';
+const CHORDYSOL_APP_VERSION = '2026-05-04-signed-bundle-v1';
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function bytesToHex(bytes) {
+    return Array.from(bytes).map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function bytesToBase64(bytes) {
+    let binary = '';
+    bytes.forEach(byte => {
+        binary += String.fromCharCode(byte);
+    });
+    return btoa(binary);
+}
+
+function base64ToBytes(value) {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
+function base58ToBytes(value) {
+    if (!value) return new Uint8Array();
+    const bytes = [0];
+    for (const char of value) {
+        const carryStart = BASE58_ALPHABET.indexOf(char);
+        if (carryStart < 0) {
+            throw new Error('Invalid Solana address character.');
+        }
+        let carry = carryStart;
+        for (let i = 0; i < bytes.length; i++) {
+            const next = bytes[i] * 58 + carry;
+            bytes[i] = next & 0xff;
+            carry = next >> 8;
+        }
+        while (carry > 0) {
+            bytes.push(carry & 0xff);
+            carry >>= 8;
+        }
+    }
+    for (const char of value) {
+        if (char !== '1') break;
+        bytes.push(0);
+    }
+    return new Uint8Array(bytes.reverse());
+}
+
+async function sha256Bytes(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return bytesToHex(new Uint8Array(digest));
+}
+
+async function sha256Blob(blob) {
+    return sha256Bytes(await blob.arrayBuffer());
+}
+
+async function sha256Text(text) {
+    return sha256Bytes(new TextEncoder().encode(text));
+}
+
+function getSolanaProvider() {
+    if (window.solana?.isPhantom || window.solana?.signMessage) return window.solana;
+    if (window.phantom?.solana?.signMessage) return window.phantom.solana;
+    return null;
+}
+
+function shortWallet(address) {
+    if (!address || address.length < 12) return address || '';
+    return `${address.slice(0, 4)}...${address.slice(-4)}`;
+}
+
+function buildBundleMessage({ creatorWallet, createdAt, audioHash, performanceHash }) {
+    return [
+        'Chordysol Signed Bundle v1',
+        `app: ${window.location.origin}${window.location.pathname}`,
+        `schema: ${CHORDYSOL_SIGNED_BUNDLE_SCHEMA}`,
+        `creator: ${creatorWallet}`,
+        `createdAt: ${createdAt}`,
+        `audioSha256: ${audioHash}`,
+        `performanceSha256: ${performanceHash}`
+    ].join('\n');
+}
+
+function verifySignedMessage({ creatorWallet, message, signature }) {
+    if (!window.nacl?.sign?.detached?.verify) {
+        throw new Error('Signature verification library did not load.');
+    }
+    const publicKeyBytes = base58ToBytes(creatorWallet);
+    if (publicKeyBytes.length !== 32) {
+        throw new Error('Receipt creator wallet is not a valid Solana public key.');
+    }
+    return window.nacl.sign.detached.verify(
+        new TextEncoder().encode(message),
+        base64ToBytes(signature),
+        publicKeyBytes
+    );
+}
+
 // Envelope Editor V2 Component
 function EnvelopeEditorV2({
     value,
