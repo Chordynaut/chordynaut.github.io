@@ -18,3 +18,17 @@ Blockchain should not pretend to create that human-ness. Chordysol's Solana dire
 ## Fork Note
 
 Chordysol is forked from Chordynaut to integrate Solana. The current release is intentionally cosmetic so the instrument remains stable before wallet, minting, attribution, or onchain receipt features are added.
+
+## Signed Bundles
+
+Chordysol now supports Solana wallet signatures without writing anything onchain.
+
+The flow is intentionally narrow:
+
+1. Connect a Solana wallet.
+2. Record a performance or loop in Chordysol.
+3. Open the download panel and choose `sign bundle`.
+4. Chordysol exports a zip containing `audio.wav`, `performance.json`, and `receipt.json`.
+5. Another Chordysol instance can import that zip, recalculate the hashes, verify the wallet signature, and confirm which Solana address signed the piece.
+
+This is not minting and it is not permanent onchain storage. It is a local cryptographic receipt: a Solana wallet attests to a specific Chordysol export.
