@@ -323,6 +323,44 @@ body {
   /* Additional styles if needed */
 }
 
+.wallet-btn,
+.signed-bundle-btn {
+  appearance: none;
+  border: 1px solid rgba(20,241,149,0.28);
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: linear-gradient(135deg, rgba(0,255,163,0.16), rgba(220,31,255,0.12));
+  color: #eafff7;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(20,241,149,0.12);
+}
+
+.wallet-btn:hover,
+.signed-bundle-btn:hover:not(:disabled) {
+  box-shadow: 0 0 10px #14f195, 0 0 18px rgba(220,31,255,0.5);
+}
+
+.signed-bundle-btn {
+  grid-column: 1 / -1;
+  text-transform: uppercase;
+}
+
+.signed-bundle-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bundle-status {
+  margin: 10px 0 0;
+  color: rgba(234,255,247,0.8);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .slider-wrapper {
     position: relative;
     padding: 10px 0;

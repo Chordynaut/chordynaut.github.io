@@ -1091,6 +1091,10 @@ function App() {
     
     // Download state
     const [isDownloadOpen, setIsDownloadOpen] = useState(false);
+    const [walletAddress, setWalletAddress] = useState('');
+    const [bundleStatus, setBundleStatus] = useState('');
+    const [isSigningBundle, setIsSigningBundle] = useState(false);
+    const importInputRef = useRef(null);
     
     // Event tracking refs for export
     const loopEventsRef = useRef([]);
@@ -1283,6 +1287,172 @@ function App() {
         
         return new Blob([buffer], { type: 'audio/wav' });
     }, []);
+
+    const connectSolanaWallet = useCallback(async () => {
+        const provider = getSolanaProvider();
+        if (!provider?.connect || !provider?.signMessage) {
+            throw new Error('No Solana wallet with message signing was found. Try Phantom or Solflare.');
+        }
+        const result = await provider.connect();
+        const address = result?.publicKey?.toString?.() || provider.publicKey?.toString?.();
+        if (!address) {
+            throw new Error('Connected wallet did not return a public key.');
+        }
+        setWalletAddress(address);
+        setBundleStatus(`wallet connected: ${shortWallet(address)}`);
+        return { provider, address };
+    }, []);
+
+    useEffect(() => {
+        const provider = getSolanaProvider();
+        if (!provider?.connect) return;
+        provider.connect({ onlyIfTrusted: true })
+            .then(result => {
+                const address = result?.publicKey?.toString?.() || provider.publicKey?.toString?.();
+                if (address) setWalletAddress(address);
+            })
+            .catch(() => {});
+    }, []);
+
+    const buildLoopWavBlob = useCallback(() => {
+        if (!loopBuffers.length) return null;
+        const ac = audioEngineRef.current.audioContext;
+        if (!ac) return null;
+        const totalLength = loopBuffers.reduce((sum, buf) => sum + buf.length, 0);
+        const mergedBuffer = ac.createBuffer(
+            loopBuffers[0].numberOfChannels,
+            totalLength,
+            loopBuffers[0].sampleRate
+        );
+        let offset = 0;
+        loopBuffers.forEach(buf => {
+            for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+                mergedBuffer.getChannelData(ch).set(buf.getChannelData(ch), offset);
+            }
+            offset += buf.length;
+        });
+        return audioBufferToWav(mergedBuffer);
+    }, [audioBufferToWav, loopBuffers]);
+
+    const buildPerformancePayload = useCallback((source, events, createdAt) => ({
+        schema: 'chordysol.performance.v1',
+        app: 'Chordysol',
+        appVersion: CHORDYSOL_APP_VERSION,
+        type: source,
+        createdAt,
+        events,
+        musicState: {
+            bpm,
+            timeSignature,
+            tonic,
+            mode,
+            loopLength,
+            waveform,
+            currentVoice,
+            adsr
+        },
+        creationInterface: 'direct Chordysol browser performance'
+    }), [adsr, bpm, currentVoice, loopLength, mode, timeSignature, tonic, waveform]);
+
+    const getSignedBundleArtifacts = useCallback(() => {
+        const createdAt = new Date().toISOString();
+        if (loopBuffers.length && loopEventsRef.current?.length) {
+            const audioBlob = buildLoopWavBlob();
+            if (audioBlob) {
+                const performancePayload = buildPerformancePayload('loop', loopEventsRef.current, createdAt);
+                return { createdAt, audioBlob, performancePayload, source: 'loop' };
+            }
+        }
+
+        if (window.performanceWavBlob && performanceEventsRef.current?.length) {
+            const performancePayload = buildPerformancePayload('performance', performanceEventsRef.current, createdAt);
+            return { createdAt, audioBlob: window.performanceWavBlob, performancePayload, source: 'performance' };
+        }
+
+        throw new Error('Record a performance or loop before signing a bundle.');
+    }, [buildLoopWavBlob, buildPerformancePayload, loopBuffers.length]);
+
+    const signBundle = useCallback(async () => {
+        setIsSigningBundle(true);
+        setBundleStatus('preparing signed bundle...');
+        try {
+            let provider = getSolanaProvider();
+            let address = walletAddress || provider?.publicKey?.toString?.();
+            if (!provider || !address) {
+                const connected = await connectSolanaWallet();
+                provider = connected.provider;
+                address = connected.address;
+            }
+            if (!provider?.signMessage || !address) {
+                throw new Error('Connect a Solana wallet before signing.');
+            }
+
+            const { createdAt, audioBlob, performancePayload, source } = getSignedBundleArtifacts();
+            const performanceText = JSON.stringify(performancePayload, null, 2);
+            const audioHash = await sha256Blob(audioBlob);
+            const performanceHash = await sha256Text(performanceText);
+            const message = buildBundleMessage({
+                creatorWallet: address,
+                createdAt,
+                audioHash,
+                performanceHash
+            });
+            const messageBytes = new TextEncoder().encode(message);
+            const signed = await provider.signMessage(messageBytes, 'utf8');
+            const signatureBytes = signed?.signature || signed;
+            const signature = bytesToBase64(signatureBytes instanceof Uint8Array ? signatureBytes : new Uint8Array(signatureBytes));
+
+            const receipt = {
+                schema: CHORDYSOL_SIGNED_BUNDLE_SCHEMA,
+                app: 'Chordysol',
+                appUrl: `${window.location.origin}${window.location.pathname}`,
+                appVersion: CHORDYSOL_APP_VERSION,
+                createdAt,
+                creatorWallet: signed?.publicKey?.toString?.() || address,
+                audio: {
+                    file: 'audio.wav',
+                    sha256: audioHash,
+                    mediaType: 'audio/wav'
+                },
+                performance: {
+                    file: 'performance.json',
+                    sha256: performanceHash,
+                    mediaType: 'application/json'
+                },
+                musicState: performancePayload.musicState,
+                source,
+                message,
+                signature: {
+                    type: 'ed25519',
+                    encoding: 'base64',
+                    value: signature
+                }
+            };
+
+            if (!verifySignedMessage({
+                creatorWallet: receipt.creatorWallet,
+                message,
+                signature
+            })) {
+                throw new Error('Wallet signature could not be verified locally.');
+            }
+
+            const { default: JSZip } = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
+            const zip = new JSZip();
+            zip.file('audio.wav', audioBlob);
+            zip.file('performance.json', performanceText);
+            zip.file('receipt.json', JSON.stringify(receipt, null, 2));
+            const bundle = await zip.generateAsync({ type: 'blob' });
+            saveBlob(`chordysol_signed_bundle_${ts()}.zip`, bundle);
+            setBundleStatus(`signed bundle by ${shortWallet(receipt.creatorWallet)} downloaded`);
+            setWalletAddress(receipt.creatorWallet);
+        } catch (error) {
+            console.error('[chordysol] signed bundle failed', error);
+            setBundleStatus(error.message || 'Unable to sign bundle.');
+        } finally {
+            setIsSigningBundle(false);
+        }
+    }, [connectSolanaWallet, getSignedBundleArtifacts, saveBlob, ts, walletAddress]);
 
     // Export function
     const exportSelection = useCallback(async (kind) => {
@@ -2056,17 +2226,26 @@ function App() {
             },
                 React.createElement('button', {
                     className: `record-btn ${isRecording ? 'active' : ''}`,
-                    onClick: () => {
-                        const ac = audioEngineRef.current?.audioContext;
+                    onClick: async () => {
+                        const engine = audioEngineRef.current;
                         if (!isRecording) {
+                            engine.init();
+                            const ac = engine.audioContext;
                             startCountdown(3, () => {
                                 setRecordedEvents([]);
                                 performanceEventsRef.current = [];
-                                setRecordStart(ac?.currentTime || 0);
+                                window.performanceWavBlob = null;
+                                engine.startRecording();
+                                setRecordStart(ac.currentTime || 0);
                                 setIsRecording(true);
                             });
                         } else {
                             setIsRecording(false);
+                            const audioBuffer = await engine.stopRecording();
+                            if (audioBuffer) {
+                                window.performanceWavBlob = audioBufferToWav(audioBuffer);
+                                setBundleStatus('performance recording ready for signing');
+                            }
                         }
                     },
                     style: { width: '24px', height: '24px', fontSize: '0.9em' }
@@ -2083,6 +2262,22 @@ function App() {
                     onClick: () => playRecording(),
                     style: { fontSize: '0.8em', padding: '3px 6px' }
                 }, '▶'),
+                React.createElement('span', {
+                    style: { color: 'rgba(255,255,255,0.3)', margin: '0 2px', fontSize: '0.9em' }
+                }, '|'),
+                React.createElement('button', {
+                    className: 'wallet-btn',
+                    title: walletAddress ? `Connected: ${walletAddress}` : 'Connect Solana wallet',
+                    onClick: async () => {
+                        try {
+                            await connectSolanaWallet();
+                        } catch (error) {
+                            console.error('[chordysol] wallet connect failed', error);
+                            setBundleStatus(error.message || 'Unable to connect wallet.');
+                            setIsDownloadOpen(true);
+                        }
+                    }
+                }, walletAddress ? shortWallet(walletAddress) : 'wallet'),
                 React.createElement('span', {
                     style: { color: 'rgba(255,255,255,0.3)', margin: '0 2px', fontSize: '0.9em' }
                 }, '|'),
@@ -2441,6 +2636,11 @@ function App() {
                     className: 'dl-grid'
                 },
                     React.createElement('button', {
+                        className: 'signed-bundle-btn',
+                        disabled: isSigningBundle || (!loopBuffers.length && !window.performanceWavBlob),
+                        onClick: () => signBundle()
+                    }, isSigningBundle ? 'signing...' : 'sign bundle'),
+                    React.createElement('button', {
                         disabled: !loopEventsRef.current?.length,
                         onClick: () => exportSelection('loop_json')
                     }, 'loop (json)'),
@@ -2463,6 +2663,9 @@ function App() {
                         onClick: () => exportSelection('all')
                     }, 'all')
                 ),
+                bundleStatus && React.createElement('p', {
+                    className: 'bundle-status'
+                }, bundleStatus),
                 React.createElement('div', {
                     className: 'overlay-actions'
                 },
