@@ -1094,6 +1094,7 @@ function App() {
     const [walletAddress, setWalletAddress] = useState('');
     const [bundleStatus, setBundleStatus] = useState('');
     const [isSigningBundle, setIsSigningBundle] = useState(false);
+    const [isVerifyingBundle, setIsVerifyingBundle] = useState(false);
     const importInputRef = useRef(null);
     
     // Event tracking refs for export
@@ -1408,7 +1409,7 @@ function App() {
                 appUrl: `${window.location.origin}${window.location.pathname}`,
                 appVersion: CHORDYSOL_APP_VERSION,
                 createdAt,
-                creatorWallet: signed?.publicKey?.toString?.() || address,
+                creatorWallet: address,
                 audio: {
                     file: 'audio.wav',
                     sha256: audioHash,
@@ -1453,6 +1454,86 @@ function App() {
             setIsSigningBundle(false);
         }
     }, [connectSolanaWallet, getSignedBundleArtifacts, saveBlob, ts, walletAddress]);
+
+    const importSignedBundle = useCallback(async (file) => {
+        if (!file) return;
+        setIsVerifyingBundle(true);
+        setBundleStatus('verifying signed bundle...');
+        try {
+            const { default: JSZip } = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
+            const zip = await JSZip.loadAsync(file);
+            const receiptFile = zip.file('receipt.json');
+            if (!receiptFile) throw new Error('Bundle is missing receipt.json.');
+            const receipt = JSON.parse(await receiptFile.async('text'));
+            if (receipt.schema !== CHORDYSOL_SIGNED_BUNDLE_SCHEMA) {
+                throw new Error('This is not a Chordysol signed bundle receipt.');
+            }
+
+            const audioFile = zip.file(receipt.audio?.file || 'audio.wav');
+            const performanceFile = zip.file(receipt.performance?.file || 'performance.json');
+            if (!audioFile || !performanceFile) {
+                throw new Error('Bundle is missing audio.wav or performance.json.');
+            }
+
+            const audioBlob = await audioFile.async('blob');
+            const performanceText = await performanceFile.async('text');
+            const audioHash = await sha256Blob(audioBlob);
+            const performanceHash = await sha256Text(performanceText);
+            if (audioHash !== receipt.audio?.sha256) {
+                throw new Error('Audio hash does not match the signed receipt.');
+            }
+            if (performanceHash !== receipt.performance?.sha256) {
+                throw new Error('Performance hash does not match the signed receipt.');
+            }
+
+            const signatureValue = typeof receipt.signature === 'string'
+                ? receipt.signature
+                : receipt.signature?.value;
+            const expectedMessage = buildBundleMessage({
+                creatorWallet: receipt.creatorWallet,
+                createdAt: receipt.createdAt,
+                audioHash,
+                performanceHash
+            });
+            if (receipt.message !== expectedMessage) {
+                throw new Error('Receipt message does not match the bundle contents.');
+            }
+            const validSignature = verifySignedMessage({
+                creatorWallet: receipt.creatorWallet,
+                message: receipt.message,
+                signature: signatureValue
+            });
+            if (!validSignature) {
+                throw new Error('Solana wallet signature is invalid.');
+            }
+
+            const performancePayload = JSON.parse(performanceText);
+            const events = Array.isArray(performancePayload.events) ? performancePayload.events : [];
+            setRecordedEvents(events);
+            performanceEventsRef.current = events;
+            window.performanceWavBlob = audioBlob;
+
+            const state = performancePayload.musicState || receipt.musicState || {};
+            if (Number.isFinite(Number(state.bpm))) setBpm(Number(state.bpm));
+            if (state.timeSignature) setTimeSignature(state.timeSignature);
+            if (state.tonic) setTonic(state.tonic);
+            if (state.mode) setMode(state.mode);
+            if (Number.isFinite(Number(state.loopLength))) setLoopLength(Number(state.loopLength));
+            if (state.waveform) setWaveform(state.waveform);
+            if (state.currentVoice && state.currentVoice !== 'sample') setCurrentVoice(state.currentVoice);
+            if (state.adsr) setAdsr(state.adsr);
+
+            setWalletAddress(receipt.creatorWallet);
+            setBundleStatus(`verified Chordysol bundle signed by ${receipt.creatorWallet}`);
+            setIsDownloadOpen(true);
+        } catch (error) {
+            console.error('[chordysol] signed bundle import failed', error);
+            setBundleStatus(error.message || 'Unable to verify bundle.');
+            setIsDownloadOpen(true);
+        } finally {
+            setIsVerifyingBundle(false);
+        }
+    }, []);
 
     // Export function
     const exportSelection = useCallback(async (kind) => {
@@ -2641,6 +2722,11 @@ function App() {
                         onClick: () => signBundle()
                     }, isSigningBundle ? 'signing...' : 'sign bundle'),
                     React.createElement('button', {
+                        className: 'import-bundle-btn',
+                        disabled: isVerifyingBundle,
+                        onClick: () => importInputRef.current?.click()
+                    }, isVerifyingBundle ? 'verifying...' : 'import signed bundle'),
+                    React.createElement('button', {
                         disabled: !loopEventsRef.current?.length,
                         onClick: () => exportSelection('loop_json')
                     }, 'loop (json)'),
@@ -2891,7 +2977,19 @@ function App() {
             React.createElement('span', {
                 className: 'human-made-note'
             }, 'Chordysol: human-made music, Solana-ready provenance')
-        )
+        ),
+
+        React.createElement('input', {
+            ref: importInputRef,
+            type: 'file',
+            accept: '.zip,application/zip',
+            style: { display: 'none' },
+            onChange: async (event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) await importSignedBundle(file);
+            }
+        })
     );
 }
 
