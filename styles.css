@@ -964,16 +964,12 @@ body {
   inset: 0;
   z-index: 9500;
   pointer-events: none;
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  padding: calc(56px + env(safe-area-inset-top, 0px)) 18px 18px;
   background: linear-gradient(180deg, rgba(0,0,0,0.18), transparent 45%);
 }
 
 .tutorial-bubble {
+  position: fixed;
   pointer-events: auto;
-  width: min(360px, calc(100vw - 32px));
   border: 1px solid rgba(20,241,149,0.34);
   border-radius: 14px;
   padding: 14px;
@@ -981,6 +977,30 @@ body {
   color: #eafff7;
   box-shadow: 0 0 24px rgba(20,241,149,0.18), 0 18px 44px rgba(0,0,0,0.42);
   backdrop-filter: blur(12px);
+}
+
+.tutorial-arrow {
+  position: absolute;
+  top: -11px;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 11px solid transparent;
+  border-right: 11px solid transparent;
+  border-bottom: 11px solid rgba(20,241,149,0.78);
+  filter: drop-shadow(0 -2px 6px rgba(20,241,149,0.3));
+}
+
+.tutorial-arrow::after {
+  content: "";
+  position: absolute;
+  left: -9px;
+  top: 2px;
+  width: 0;
+  height: 0;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-bottom: 9px solid rgba(7, 12, 20, 0.98);
 }
 
 .tutorial-kicker {
@@ -1034,13 +1054,8 @@ body {
 }
 
 @media (max-width: 640px) {
-  .tutorial-layer {
-    justify-content: center;
-    padding-top: calc(52px + env(safe-area-inset-top, 0px));
-  }
-
   .tutorial-bubble {
-    width: min(94vw, 360px);
+    max-width: min(94vw, 360px);
   }
 }
 

@@ -19,22 +19,27 @@ const CHORDYSOL_TUTORIAL_SEEN_KEY = 'chordysol.tutorialSeen.v1';
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const CHORDYSOL_TUTORIAL_STEPS = [
     {
+        anchor: 'wallet',
         title: '1. Connect your Solana wallet',
         body: 'Use the wallet button in the top bar. Chordysol uses your wallet to sign the finished bundle; it does not write anything onchain.'
     },
     {
+        anchor: 'strum',
         title: '2. Play the instrument',
         body: 'Tap a chord on the left, then strum the large pad. Your notes, timing, mode, tempo, and settings become the performance data.'
     },
     {
+        anchor: 'record',
         title: '3. Record something',
         body: 'Press the red record button, play a short piece, then press record again to stop. You can also use the loop controls if you prefer.'
     },
     {
+        anchor: 'download',
         title: '4. Sign and save',
         body: 'Open the download panel, choose sign bundle, approve the wallet signature, and save the zip with audio, performance data, and receipt.'
     },
     {
+        anchor: 'download',
         title: '5. Verify another bundle',
         body: 'Use import signed bundle to check someone else\'s zip. Chordysol recalculates hashes and confirms which Solana address signed it.'
     }
@@ -1021,7 +1026,16 @@ function AboutOverlay({ onClose }) {
     );
 }
 
-function TutorialBubble({ step, index, total, onNext, onSkip }) {
+function TutorialBubble({ step, index, total, anchorRect, onNext, onSkip }) {
+    const viewportWidth = window.innerWidth || 1024;
+    const bubbleWidth = Math.min(360, Math.max(260, viewportWidth - 32));
+    const anchorCenter = anchorRect ? anchorRect.left + (anchorRect.width / 2) : viewportWidth - 196;
+    const bubbleLeft = anchorRect
+        ? Math.max(16, Math.min(anchorCenter - (bubbleWidth / 2), viewportWidth - bubbleWidth - 16))
+        : Math.max(16, viewportWidth - bubbleWidth - 18);
+    const bubbleTop = anchorRect ? anchorRect.bottom + 14 : 62;
+    const arrowLeft = Math.max(18, Math.min(anchorCenter - bubbleLeft, bubbleWidth - 18));
+
     return React.createElement('div', {
         className: 'tutorial-layer',
         role: 'dialog',
@@ -1029,8 +1043,17 @@ function TutorialBubble({ step, index, total, onNext, onSkip }) {
         'aria-label': 'Chordysol quick start'
     },
         React.createElement('div', {
-            className: 'tutorial-bubble'
+            className: 'tutorial-bubble',
+            style: {
+                left: `${bubbleLeft}px`,
+                top: `${bubbleTop}px`,
+                width: `${bubbleWidth}px`
+            }
         },
+            anchorRect && React.createElement('div', {
+                className: 'tutorial-arrow',
+                style: { left: `${arrowLeft}px` }
+            }),
             React.createElement('div', { className: 'tutorial-kicker' }, `Quick start ${index + 1}/${total}`),
             React.createElement('h3', null, step.title),
             React.createElement('p', null, step.body),
@@ -1088,7 +1111,12 @@ function App() {
     const [showConfig, setShowConfig] = useState(false);
     const [showAbout, setShowAbout] = useState(false);
     const [tutorialStepIndex, setTutorialStepIndex] = useState(-1);
+    const [tutorialAnchorRect, setTutorialAnchorRect] = useState(null);
     const shouldStartTutorialAfterAboutRef = useRef(false);
+    const walletButtonRef = useRef(null);
+    const recordButtonRef = useRef(null);
+    const downloadButtonRef = useRef(null);
+    const strumPadRef = useRef(null);
     
     // Countdown state
     const [countdown, setCountdown] = useState(0);
@@ -1228,6 +1256,59 @@ function App() {
             return current + 1;
         });
     }, []);
+
+    const getTutorialAnchorElement = useCallback((anchor) => {
+        if (anchor === 'wallet') return walletButtonRef.current;
+        if (anchor === 'record') return recordButtonRef.current;
+        if (anchor === 'download') return downloadButtonRef.current;
+        if (anchor === 'strum') return strumPadRef.current;
+        return null;
+    }, []);
+
+    useEffect(() => {
+        if (tutorialStepIndex < 0) {
+            setTutorialAnchorRect(null);
+            return undefined;
+        }
+
+        const updateAnchor = () => {
+            const step = CHORDYSOL_TUTORIAL_STEPS[tutorialStepIndex];
+            const element = getTutorialAnchorElement(step?.anchor);
+            if (!element) {
+                setTutorialAnchorRect(null);
+                return;
+            }
+            const rect = element.getBoundingClientRect();
+            if (step?.anchor === 'strum') {
+                setTutorialAnchorRect({
+                    left: rect.left,
+                    right: rect.right,
+                    top: rect.top,
+                    bottom: rect.top + 8,
+                    width: rect.width,
+                    height: 8
+                });
+                return;
+            }
+            setTutorialAnchorRect({
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                bottom: rect.bottom,
+                width: rect.width,
+                height: rect.height
+            });
+        };
+
+        const raf = requestAnimationFrame(updateAnchor);
+        window.addEventListener('resize', updateAnchor);
+        window.visualViewport?.addEventListener('resize', updateAnchor);
+        return () => {
+            cancelAnimationFrame(raf);
+            window.removeEventListener('resize', updateAnchor);
+            window.visualViewport?.removeEventListener('resize', updateAnchor);
+        };
+    }, [getTutorialAnchorElement, tutorialStepIndex]);
 
     useEffect(() => {
         const hasSeenTutorial = localStorage.getItem(CHORDYSOL_TUTORIAL_SEEN_KEY) === 'yes';
@@ -2386,6 +2467,7 @@ function App() {
             },
                 React.createElement('button', {
                     className: `record-btn ${isRecording ? 'active' : ''}`,
+                    ref: recordButtonRef,
                     onClick: async () => {
                         const engine = audioEngineRef.current;
                         if (!isRecording) {
@@ -2427,6 +2509,7 @@ function App() {
                 }, '|'),
                 React.createElement('button', {
                     className: 'wallet-btn',
+                    ref: walletButtonRef,
                     title: walletAddress ? `Connected: ${walletAddress}` : 'Connect Solana wallet',
                     onClick: async () => {
                         try {
@@ -2443,6 +2526,7 @@ function App() {
                 }, '|'),
                 React.createElement('button', {
                     className: 'btn-icon download-btn',
+                    ref: downloadButtonRef,
                     title: 'Download',
                     onClick: () => setIsDownloadOpen(true),
                     style: { fontSize: '0.9em', padding: '3px 5px' }
@@ -2986,6 +3070,7 @@ function App() {
             },
                 React.createElement('div', {
                     className: 'flex-1 relative rounded overflow-hidden strum-pad',
+                    ref: strumPadRef,
                     onPointerDown: handleStrumPointerDown,
                     onPointerMove: handleStrumPointerMove,
                     onPointerUp: handleStrumPointerUp,
@@ -3074,6 +3159,7 @@ function App() {
             step: CHORDYSOL_TUTORIAL_STEPS[tutorialStepIndex],
             index: tutorialStepIndex,
             total: CHORDYSOL_TUTORIAL_STEPS.length,
+            anchorRect: tutorialAnchorRect,
             onNext: advanceTutorial,
             onSkip: finishTutorial
         })
