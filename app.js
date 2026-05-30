@@ -14,7 +14,7 @@ function SolanaMark({ className = '' } = {}) {
 }
 
 const CHORDYNAUT_SIGNED_BUNDLE_SCHEMA = 'chordynaut.signed_bundle.v1';
-const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v1';
+const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v2';
 const CHORDYNAUT_TUTORIAL_SEEN_KEY = 'chordynaut.tutorialSeen.v1';
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const CHORDYNAUT_TUTORIAL_STEPS = [
@@ -1211,8 +1211,16 @@ function isIOS() {
 function getFullscreenElement() {
     return document.fullscreenElement ||
            document.webkitFullscreenElement ||
+           document.mozFullScreenElement ||
            document.msFullscreenElement ||
            null;
+}
+
+function getFullscreenTarget() {
+    return document.querySelector('.app-shell') ||
+           document.getElementById('root') ||
+           document.body ||
+           document.documentElement;
 }
 
 function isStandaloneDisplayMode() {
@@ -1226,8 +1234,8 @@ function isBrowserChromeNudged() {
 }
 
 function canRequestFullscreen() {
-    const el = document.documentElement;
-    return !!(el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen);
+    const el = getFullscreenTarget();
+    return !!(el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen);
 }
 
 function nudgeBrowserChrome() {
@@ -1236,13 +1244,18 @@ function nudgeBrowserChrome() {
 
     const scrollOnce = () => {
         try {
-            window.scrollTo(0, 1);
+            const maxScroll = Math.max(
+                document.documentElement.scrollHeight,
+                document.body ? document.body.scrollHeight : 0
+            ) - window.innerHeight;
+            window.scrollTo(0, Math.max(1, Math.min(240, maxScroll)));
         } catch (err) {}
     };
 
     requestAnimationFrame(scrollOnce);
     setTimeout(scrollOnce, 80);
     setTimeout(scrollOnce, 240);
+    setTimeout(scrollOnce, 520);
 }
 
 function clearBrowserChromeNudge() {
@@ -1254,16 +1267,23 @@ function clearBrowserChromeNudge() {
 }
 
 async function requestAppFullscreen() {
-    const el = document.documentElement;
+    const el = getFullscreenTarget();
+    let result;
 
     if (el.requestFullscreen) {
-        await el.requestFullscreen();
+        result = el.requestFullscreen({ navigationUI: 'hide' });
     } else if (el.webkitRequestFullscreen) {
-        el.webkitRequestFullscreen();
+        result = el.webkitRequestFullscreen(Element.ALLOW_KEYBOARD_INPUT);
+    } else if (el.mozRequestFullScreen) {
+        result = el.mozRequestFullScreen();
     } else if (el.msRequestFullscreen) {
-        el.msRequestFullscreen();
+        result = el.msRequestFullscreen();
     } else {
         throw new Error('Fullscreen API is not available');
+    }
+
+    if (result && typeof result.then === 'function') {
+        await result;
     }
 
     if (screen.orientation && screen.orientation.lock) {
@@ -1280,6 +1300,8 @@ async function exitAppFullscreen() {
         await document.exitFullscreen();
     } else if (document.webkitExitFullscreen) {
         document.webkitExitFullscreen();
+    } else if (document.mozCancelFullScreen) {
+        document.mozCancelFullScreen();
     } else if (document.msExitFullscreen) {
         document.msExitFullscreen();
     }
@@ -1625,6 +1647,7 @@ function App() {
     const currentChordRef = useRef(null);
     const activeChordPointerIdRef = useRef(null);
     const chordPointerOrderRef = useRef(0);
+    const fullscreenGestureLockRef = useRef(false);
     
     // Melody mode override
     const strumNotesOverrideRef = useRef(null);
@@ -1779,6 +1802,8 @@ function App() {
 
         document.addEventListener('fullscreenchange', syncFullscreenState);
         document.addEventListener('webkitfullscreenchange', syncFullscreenState);
+        document.addEventListener('mozfullscreenchange', syncFullscreenState);
+        document.addEventListener('MSFullscreenChange', syncFullscreenState);
         window.addEventListener('resize', syncFullscreenState);
         window.addEventListener('orientationchange', syncFullscreenState);
 
@@ -1787,6 +1812,8 @@ function App() {
         return () => {
             document.removeEventListener('fullscreenchange', syncFullscreenState);
             document.removeEventListener('webkitfullscreenchange', syncFullscreenState);
+            document.removeEventListener('mozfullscreenchange', syncFullscreenState);
+            document.removeEventListener('MSFullscreenChange', syncFullscreenState);
             window.removeEventListener('resize', syncFullscreenState);
             window.removeEventListener('orientationchange', syncFullscreenState);
         };
@@ -2240,7 +2267,16 @@ function App() {
         setShowIOSOverlay(false);
     }, []);
 
-    const handleFullscreenClick = useCallback(async () => {
+    const handleFullscreenClick = useCallback(async (event) => {
+        if (event && typeof event.preventDefault === 'function') event.preventDefault();
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+
+        if (fullscreenGestureLockRef.current) return;
+        fullscreenGestureLockRef.current = true;
+        setTimeout(() => {
+            fullscreenGestureLockRef.current = false;
+        }, 700);
+
         if (isBrowserChromeNudged() && !getFullscreenElement() && !isStandaloneDisplayMode()) {
             clearBrowserChromeNudge();
             setFullscreenMessage('');
@@ -2260,7 +2296,7 @@ function App() {
             setFullscreenMessage(
                 isIOS()
                     ? 'iPhone Safari does not allow normal in-page fullscreen for this kind of app. Add Chordynaut to the Home Screen, then launch it from that icon for the closest fullscreen mode.'
-                    : 'This browser did not expose the Fullscreen API, so Chordynaut used the browser-chrome fallback. Drag this panel up if the address bar is still visible, then press OK.'
+                    : 'This browser did not expose the Fullscreen API, so Chordynaut used the browser-chrome fallback. If the address bar is still visible, swipe upward once, then press OK.'
             );
             setIsFullscreenActive(true);
             setShowAbout(true);
@@ -2288,7 +2324,7 @@ function App() {
             setFullscreenMessage(
                 isIOS()
                     ? 'iPhone Safari blocked in-page fullscreen. Add Chordynaut to the Home Screen, then launch it from that icon for the closest fullscreen mode.'
-                    : 'Fullscreen was blocked by the browser, so Chordynaut used the browser-chrome fallback. Drag this panel up if the address bar is still visible, then press OK.'
+                    : 'Fullscreen was blocked by the browser, so Chordynaut used the browser-chrome fallback. If the address bar is still visible, swipe upward once, then press OK.'
             );
             setIsFullscreenActive(true);
             setShowAbout(true);
@@ -3084,6 +3120,10 @@ function App() {
                     className: 'fullscreen-btn',
                     title: isFullscreenActive ? 'exit fullscreen' : 'fullscreen mode',
                     onClick: handleFullscreenClick,
+                    onPointerDown: handleFullscreenClick,
+                    onTouchStart: event => {
+                        if (!window.PointerEvent) handleFullscreenClick(event);
+                    },
                     style: {
                         fontSize: '1.2em',
                         marginRight: '8px',
