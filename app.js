@@ -14,7 +14,7 @@ function SolanaMark({ className = '' } = {}) {
 }
 
 const CHORDYNAUT_SIGNED_BUNDLE_SCHEMA = 'chordynaut.signed_bundle.v1';
-const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v3';
+const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v4';
 const CHORDYNAUT_TUTORIAL_SEEN_KEY = 'chordynaut.tutorialSeen.v1';
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const CHORDYNAUT_TUTORIAL_STEPS = [
@@ -3061,11 +3061,6 @@ function App() {
     if (showAbout) {
         return React.createElement(AboutOverlay, {
             onClose: () => {
-                if (fullscreenMessage && isBrowserChromeNudged() && !getFullscreenElement() && !isStandaloneDisplayMode()) {
-                    clearBrowserChromeNudge();
-                    setFullscreenMessage('');
-                    setIsFullscreenActive(false);
-                }
                 setShowAbout(false);
                 if (shouldStartTutorialAfterAboutRef.current) {
                     shouldStartTutorialAfterAboutRef.current = false;
