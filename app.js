@@ -1,7 +1,7 @@
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 const CHORDYNAUT_SIGNED_BUNDLE_SCHEMA = 'chordynaut.signed_bundle.v1';
-const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v6';
+const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v7';
 const CHORDYNAUT_TUTORIAL_SEEN_KEY = 'chordynaut.tutorialSeen.v2';
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const CHORDYNAUT_TUTORIAL_STEPS = [
@@ -2450,6 +2450,40 @@ function App() {
     }, []);
 
     useEffect(() => {
+        const handleNativeVoicePress = (event) => {
+            if (event.type === 'mousedown' && event.button !== 0) return;
+
+            const target = event.target?.closest?.('[data-voice]');
+            if (!target || !voiceSelectorRef.current?.contains(target)) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            const now = Date.now();
+            if (now - voicePointerHandledAtRef.current < 90) return;
+            voicePointerHandledAtRef.current = now;
+
+            const voice = target.dataset.voice;
+            if (voice === 'sample') {
+                chooseMicVoice();
+            } else if (voice) {
+                chooseVoice(voice);
+            }
+        };
+
+        const touchOptions = { capture: true, passive: false };
+        document.addEventListener('pointerdown', handleNativeVoicePress, true);
+        document.addEventListener('touchstart', handleNativeVoicePress, touchOptions);
+        document.addEventListener('mousedown', handleNativeVoicePress, true);
+
+        return () => {
+            document.removeEventListener('pointerdown', handleNativeVoicePress, true);
+            document.removeEventListener('touchstart', handleNativeVoicePress, touchOptions);
+            document.removeEventListener('mousedown', handleNativeVoicePress, true);
+        };
+    }, [chooseMicVoice, chooseVoice]);
+
+    useEffect(() => {
         audioEngineRef.current.setADSR(adsr);
     }, [adsr]);
 
@@ -3186,6 +3220,7 @@ function App() {
                         React.createElement('button', {
                             key: wave,
                             className: `voice-btn ${currentVoice === wave ? 'active' : ''}`,
+                            'data-voice': wave,
                             onPointerDown: (event) => handleVoicePointerDown(event, () => chooseVoice(wave)),
                             onClick: (event) => handleVoiceClick(event, () => chooseVoice(wave)),
                             title: wave,
@@ -3197,6 +3232,7 @@ function App() {
                     ),
                     React.createElement('button', {
                         className: `voice-btn mic-btn ${currentVoice === 'sample' ? 'active' : ''} ${isRecordingSample ? 'recording' : ''}`,
+                        'data-voice': 'sample',
                         onPointerDown: (event) => handleVoicePointerDown(event, chooseMicVoice),
                         onClick: (event) => handleVoiceClick(event, chooseMicVoice),
                         title: sampleData.isActive ? 'Use mic sample' : 'Record mic sample',
