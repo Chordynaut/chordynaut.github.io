@@ -1,7 +1,7 @@
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 const CHORDYNAUT_SIGNED_BUNDLE_SCHEMA = 'chordynaut.signed_bundle.v1';
-const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v5';
+const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v6';
 const CHORDYNAUT_TUTORIAL_SEEN_KEY = 'chordynaut.tutorialSeen.v2';
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const CHORDYNAUT_TUTORIAL_STEPS = [
@@ -700,7 +700,8 @@ class AudioEngine {
 
     noteOn(midiNote, velocity = 1.0, isChord = false, sampleData = null) {
         this.init();
-        
+
+        const replacingExisting = this.voices.has(midiNote);
         if (this.voices.has(midiNote)) {
             this.noteOff(midiNote);
         }
@@ -708,7 +709,7 @@ class AudioEngine {
         const now = this.audioContext.currentTime;
         const freq = this.midiToFreq(midiNote);
         
-        if (this.voices.size >= this.maxVoices) {
+        if (!replacingExisting && this.voices.size >= this.maxVoices) {
             const oldestKey = this.voices.keys().next().value;
             this.noteOff(oldestKey);
         }
@@ -756,7 +757,21 @@ class AudioEngine {
         }
 
         const id = ++this._voiceId;
-        this.voices.set(midiNote, { id, source, gainNode, filter });
+        this.voices.set(midiNote, { id, source, gainNode, filter, velocity, isChord });
+    }
+
+    revoiceActiveVoices(sampleData = null) {
+        if (!this.audioContext || this.voices.size === 0) return;
+
+        const active = Array.from(this.voices.entries()).map(([midiNote, voice]) => ({
+            midiNote,
+            velocity: voice.velocity ?? 1.0,
+            isChord: !!voice.isChord
+        }));
+
+        active.forEach(({ midiNote, velocity, isChord }) => {
+            this.noteOn(midiNote, velocity, isChord, sampleData);
+        });
     }
 
     noteOff(midiNote) {
@@ -1581,6 +1596,9 @@ function App() {
     const loopRecordingTokenRef = useRef(0);
     const loopBuffersRef = useRef([]);
     const playbackTimeoutsRef = useRef([]);
+    const voicePointerHandledAtRef = useRef(0);
+    const previousVoiceRef = useRef(currentVoice);
+    const previousSampleBufferRef = useRef(sampleData.buffer);
     
     // Loop length state with persistence
     const [loopLength, setLoopLength] = useState(() => {
@@ -2364,10 +2382,72 @@ function App() {
     }, []);
 
     useEffect(() => {
+        const engine = audioEngineRef.current;
+        const sample = currentVoice === 'sample' ? sampleData : null;
+        const voiceChanged = previousVoiceRef.current !== currentVoice;
+        const sampleBufferChanged = previousSampleBufferRef.current !== sampleData.buffer;
+
         if (currentVoice !== 'sample') {
-            audioEngineRef.current.setWaveform(currentVoice);
+            engine.setWaveform(currentVoice);
         }
-    }, [currentVoice]);
+
+        if ((voiceChanged || (currentVoice === 'sample' && sampleBufferChanged)) && engine.voices.size > 0) {
+            engine.revoiceActiveVoices(sample);
+        }
+
+        previousVoiceRef.current = currentVoice;
+        previousSampleBufferRef.current = sampleData.buffer;
+    }, [currentVoice, sampleData]);
+
+    const applyVoice = useCallback((voice, voiceSampleData = sampleData) => {
+        const engine = audioEngineRef.current;
+        const sampleBuffer = voiceSampleData?.buffer || null;
+        const shouldRevoice = previousVoiceRef.current !== voice ||
+            (voice === 'sample' && previousSampleBufferRef.current !== sampleBuffer);
+
+        if (voice !== 'sample') {
+            engine.setWaveform(voice);
+        }
+
+        if (shouldRevoice && engine.voices.size > 0) {
+            engine.revoiceActiveVoices(voice === 'sample' ? voiceSampleData : null);
+        }
+
+        previousVoiceRef.current = voice;
+        previousSampleBufferRef.current = sampleBuffer;
+        setCurrentVoice(voice);
+    }, [sampleData]);
+
+    const chooseVoice = useCallback((voice) => {
+        applyVoice(voice);
+    }, [applyVoice]);
+
+    const chooseMicVoice = useCallback(() => {
+        if (!sampleData.isActive) {
+            startCountdown(3, () => {
+                startMicSample();
+            });
+        } else {
+            applyVoice('sample');
+        }
+    }, [applyVoice, sampleData.isActive, startCountdown, startMicSample]);
+
+    const handleVoicePointerDown = useCallback((event, action) => {
+        event.preventDefault();
+        event.stopPropagation();
+        voicePointerHandledAtRef.current = Date.now();
+        action();
+    }, []);
+
+    const handleVoiceClick = useCallback((event, action) => {
+        if (Date.now() - voicePointerHandledAtRef.current < 700) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
+
+        action();
+    }, []);
 
     useEffect(() => {
         audioEngineRef.current.setADSR(adsr);
@@ -3106,7 +3186,8 @@ function App() {
                         React.createElement('button', {
                             key: wave,
                             className: `voice-btn ${currentVoice === wave ? 'active' : ''}`,
-                            onClick: () => setCurrentVoice(wave),
+                            onPointerDown: (event) => handleVoicePointerDown(event, () => chooseVoice(wave)),
+                            onClick: (event) => handleVoiceClick(event, () => chooseVoice(wave)),
                             title: wave,
                             style: { fontSize: '0.9em', padding: '2px 5px' }
                         }, 
@@ -3116,15 +3197,8 @@ function App() {
                     ),
                     React.createElement('button', {
                         className: `voice-btn mic-btn ${currentVoice === 'sample' ? 'active' : ''} ${isRecordingSample ? 'recording' : ''}`,
-                        onClick: () => {
-                            if (!sampleData.isActive) {
-                                startCountdown(3, () => {
-                                    startMicSample();
-                                });
-                            } else {
-                                setCurrentVoice('sample');
-                            }
-                        },
+                        onPointerDown: (event) => handleVoicePointerDown(event, chooseMicVoice),
+                        onClick: (event) => handleVoiceClick(event, chooseMicVoice),
                         title: sampleData.isActive ? 'Use mic sample' : 'Record mic sample',
                         style: { fontSize: '0.9em', padding: '2px 5px' }
                     }, '🎤'),
