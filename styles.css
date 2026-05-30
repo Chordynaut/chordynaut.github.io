@@ -79,10 +79,9 @@ body {
 
 html.browser-chrome-nudge,
 html.browser-chrome-nudge body {
-  height: calc(var(--app-height, 100dvh) + 260px);
-  min-height: calc(var(--app-height, 100dvh) + 260px);
+  height: calc(var(--app-height, 100dvh) + 96px);
+  min-height: calc(var(--app-height, 100dvh) + 96px);
   overflow-y: auto;
-  touch-action: pan-y;
 }
 
 html.browser-chrome-nudge #root {
@@ -96,12 +95,7 @@ html.browser-chrome-nudge #root {
 html.browser-chrome-nudge body::after {
   content: "";
   display: block;
-  height: 260px;
-}
-
-html.browser-chrome-nudge .config-overlay {
-  touch-action: pan-y;
-  -webkit-overflow-scrolling: touch;
+  height: 96px;
 }
 
 @keyframes bgPulse {
