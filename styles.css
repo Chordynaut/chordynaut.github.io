@@ -121,70 +121,7 @@ html.browser-chrome-nudge body::after {
 }
 
 #orientation-lock {
-    background: radial-gradient(circle at 50% 20%, rgba(20, 241, 149, 0.22), transparent 34%),
-      linear-gradient(135deg, #05080d 0%, #151122 100%);
-}
-
-.solana-lock-logo,
-.solana-mark {
-  display: inline-flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-  width: 48px;
-  height: 34px;
-  flex: 0 0 auto;
-}
-
-.solana-lock-logo {
-  width: 132px;
-  height: 92px;
-  gap: 10px;
-  margin-bottom: 22px;
-}
-
-.solana-mark span,
-.solana-lock-logo span {
-  display: block;
-  height: 7px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #00ffa3 0%, #14f195 48%, #dc1fff 100%);
-  box-shadow: 0 0 14px rgba(20, 241, 149, 0.45);
-}
-
-.solana-lock-logo span {
-  height: 18px;
-  box-shadow: 0 0 24px rgba(20, 241, 149, 0.5);
-}
-
-.solana-mark span:nth-child(2),
-.solana-lock-logo span:nth-child(2) {
-  transform: translateX(-8%);
-}
-
-.solana-mark span:nth-child(3),
-.solana-lock-logo span:nth-child(3) {
-  transform: translateX(8%);
-}
-
-.topbar-solana-mark {
-  width: 28px;
-  height: 22px;
-  gap: 3px;
-}
-
-.topbar-solana-mark span {
-  height: 5px;
-}
-
-.about-solana-mark {
-  width: 90px;
-  height: 60px;
-  gap: 8px;
-}
-
-.about-solana-mark span {
-  height: 12px;
+    background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
 }
 
 /* Top bar stability */

@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-title" content="Chordynaut">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <link rel="manifest" href="manifest.json">
-    <title>Chordynaut - Solana Chord Synthesizer</title>
+    <title>Chordynaut 🎹 - Cosmic Chord Synthesizer</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
@@ -82,17 +82,13 @@
 </head>
 <body oncontextmenu="return false;" spellcheck="false" autocorrect="off" class="bg-cosmic-bg text-white overflow-hidden">
     <div class="neon-bar"></div>
-    <div id="orientation-lock" class="fixed inset-0 bg-cosmic-bg z-50 flex flex-col items-center justify-center p-8 text-center">
-        <div class="solana-lock-logo" role="img" aria-label="Solana logo">
-            <span></span>
-            <span></span>
-            <span></span>
-        </div>
-        <div class="text-6xl mb-6">Mobile landscape required</div>
+    <div id="orientation-lock" class="fixed inset-0 bg-cosmic-bg z-50 hidden flex-col items-center justify-center p-8 text-center">
+        <img src="https://decentricity.github.io/1760829170789.jpg" alt="Chordynaut Logo" style="width: 120px; height: 120px; margin-bottom: 20px; border-radius: 12px; object-fit: cover;">
+        <div class="text-6xl mb-6">📱 → 🔄</div>
         <h2 class="text-2xl font-bold mb-4">Please Rotate Your Device</h2>
-        <p class="text-gray-400">Chordynaut requires landscape orientation for the best experience</p>
+        <p class="text-gray-400">Chordynaut needs landscape only in fullscreen mode</p>
     </div>
-    <div id="root" class="hidden"></div>
+    <div id="root"></div>
     <script src="app.js"></script>
 </body>
 </html>

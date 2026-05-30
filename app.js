@@ -1,47 +1,34 @@
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
-function SolanaMark({ className = '' } = {}) {
-    return React.createElement('span', {
-        className: `solana-mark ${className}`.trim(),
-        role: 'img',
-        'aria-label': 'Solana logo',
-        title: 'Solana integration track'
-    },
-        React.createElement('span', null),
-        React.createElement('span', null),
-        React.createElement('span', null)
-    );
-}
-
 const CHORDYNAUT_SIGNED_BUNDLE_SCHEMA = 'chordynaut.signed_bundle.v1';
-const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v4';
-const CHORDYNAUT_TUTORIAL_SEEN_KEY = 'chordynaut.tutorialSeen.v1';
+const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v5';
+const CHORDYNAUT_TUTORIAL_SEEN_KEY = 'chordynaut.tutorialSeen.v2';
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const CHORDYNAUT_TUTORIAL_STEPS = [
     {
-        anchor: 'wallet',
-        title: '1. Connect your Solana wallet',
-        body: 'Use the wallet button in the top bar. Chordynaut uses your wallet to sign the finished bundle; it does not write anything onchain.'
+        anchor: 'chords',
+        title: '1. Hold a chord',
+        body: 'Press a chord button on the left. Drag to another chord to change harmony without lifting your finger.'
     },
     {
         anchor: 'strum',
-        title: '2. Play the instrument',
-        body: 'Tap a chord on the left, then strum the large pad. Your notes, timing, mode, tempo, and settings become the performance data.'
+        title: '2. Strum the notes',
+        body: 'While holding a chord, tap or drag across the right panel to play notes from that chord.'
+    },
+    {
+        anchor: 'voice',
+        title: '3. Choose a sound',
+        body: 'Use the waveform buttons for synth voices, or tap the mic to record a short sound and play with it.'
     },
     {
         anchor: 'record',
-        title: '3. Record something',
-        body: 'Press the red record button, play a short piece, then press record again to stop. You can also use the loop controls if you prefer.'
+        title: '4. Record a take',
+        body: 'Use the red record button to capture a performance. Press it again to stop recording.'
     },
     {
         anchor: 'download',
-        title: '4. Sign and save',
-        body: 'Open the download panel, choose sign bundle, approve the wallet signature, and save the zip with audio, performance data, and receipt.'
-    },
-    {
-        anchor: 'download',
-        title: '5. Verify another bundle',
-        body: 'Use import signed bundle to check someone else\'s zip. Chordynaut recalculates hashes and confirms which Solana address signed it.'
+        title: '5. Save your work',
+        body: 'Open the download panel to export audio and performance files when you want to keep a take.'
     }
 ];
 
@@ -72,7 +59,7 @@ function base58ToBytes(value) {
     for (const char of value) {
         const carryStart = BASE58_ALPHABET.indexOf(char);
         if (carryStart < 0) {
-            throw new Error('Invalid Solana address character.');
+            throw new Error('Invalid wallet address character.');
         }
         let carry = carryStart;
         for (let i = 0; i < bytes.length; i++) {
@@ -134,7 +121,7 @@ function verifySignedMessage({ creatorWallet, message, signature }) {
     }
     const publicKeyBytes = base58ToBytes(creatorWallet);
     if (publicKeyBytes.length !== 32) {
-        throw new Error('Receipt creator wallet is not a valid Solana public key.');
+        throw new Error('Receipt creator wallet is not a valid public key.');
     }
     return window.nacl.sign.detached.verify(
         new TextEncoder().encode(message),
@@ -1374,20 +1361,8 @@ function AboutOverlay({ onClose, fullscreenMessage = '' }) {
                     marginBottom: '30px'
                 }
             },
-                React.createElement('div', { style: { display: 'flex', justifyContent: 'center', marginBottom: '18px' } },
-                    React.createElement(SolanaMark, { className: 'about-solana-mark' })
-                ),
                 React.createElement('p', { style: { marginBottom: '15px' } },
-                    'Chordynaut integrates Solana into a human-first music creation workflow.'
-                ),
-                React.createElement('p', { style: { marginBottom: '15px' } },
-                    'The goal is not to replace musicians with chains. It is to let people create pieces with their hands, ears, timing, mistakes, and taste, then use blockchain records to preserve attribution, provenance, and the human-ness of the work.'
-                ),
-                React.createElement('p', { style: { marginBottom: '15px' } },
-                    'Solana is the next integration target because low-cost, fast settlement can make musical timestamps, creator receipts, editions, and collaboration trails practical without interrupting the act of playing.'
-                ),
-                React.createElement('p', { style: { marginBottom: '15px' } },
-                    'Chordynaut was originally made by ',
+                    'Chordynaut was made by ',
                     React.createElement('a', {
                         href: 'https://x.com/decentricity',
                         target: '_blank',
@@ -1401,6 +1376,20 @@ function AboutOverlay({ onClose, fullscreenMessage = '' }) {
                         rel: 'noopener noreferrer',
                         style: { color: '#2ec4b6', textDecoration: 'underline' }
                     }, 'Ms. Pandu Sastrowardoyo'),
+                    ' with the help of ',
+                    React.createElement('a', {
+                        href: 'https://berrry.app',
+                        target: '_blank',
+                        rel: 'noopener noreferrer',
+                        style: { color: '#2ec4b6', textDecoration: 'underline' }
+                    }, 'Berrry'),
+                    ' by ',
+                    React.createElement('a', {
+                        href: 'https://x.com/vgrichina',
+                        target: '_blank',
+                        rel: 'noopener noreferrer',
+                        style: { color: '#2ec4b6', textDecoration: 'underline' }
+                    }, 'vlad.near'),
                     '.'
                 ),
                 React.createElement('p', null,
@@ -1544,6 +1533,8 @@ function App() {
     const recordButtonRef = useRef(null);
     const downloadButtonRef = useRef(null);
     const strumPadRef = useRef(null);
+    const chordGridRef = useRef(null);
+    const voiceSelectorRef = useRef(null);
     
     // Countdown state
     const [countdown, setCountdown] = useState(0);
@@ -1706,6 +1697,8 @@ function App() {
     }, []);
 
     const getTutorialAnchorElement = useCallback((anchor) => {
+        if (anchor === 'chords') return chordGridRef.current;
+        if (anchor === 'voice') return voiceSelectorRef.current;
         if (anchor === 'wallet') return walletButtonRef.current;
         if (anchor === 'record') return recordButtonRef.current;
         if (anchor === 'download') return downloadButtonRef.current;
@@ -1916,7 +1909,7 @@ function App() {
     const connectSolanaWallet = useCallback(async () => {
         const provider = getSolanaProvider();
         if (!provider?.connect || !provider?.signMessage) {
-            throw new Error('No Solana wallet with message signing was found. Try Phantom or Solflare.');
+            throw new Error('No compatible wallet with message signing was found. Try Phantom or Solflare.');
         }
         const result = await provider.connect();
         const address = result?.publicKey?.toString?.() || provider.publicKey?.toString?.();
@@ -2009,7 +2002,7 @@ function App() {
                 address = connected.address;
             }
             if (!provider?.signMessage || !address) {
-                throw new Error('Connect a Solana wallet before signing.');
+                throw new Error('Connect a wallet before signing.');
             }
 
             const { createdAt, audioBlob, performancePayload, source } = getSignedBundleArtifacts();
@@ -2128,7 +2121,7 @@ function App() {
                 signature: signatureValue
             });
             if (!validSignature) {
-                throw new Error('Solana wallet signature is invalid.');
+                throw new Error('Wallet signature is invalid.');
             }
 
             const performancePayload = JSON.parse(performanceText);
@@ -3096,7 +3089,6 @@ function App() {
                     onMouseDown: e => e.currentTarget.style.transform = 'scale(0.9)',
                     onMouseUp: e => e.currentTarget.style.transform = 'scale(1.0)',
                 }, '⛶'),
-                React.createElement(SolanaMark, { className: 'topbar-solana-mark' }),
                 React.createElement('h1', {
                     className: 'logo-text text-sm font-bold bg-gradient-to-r from-cosmic-glow via-cosmic-secondary to-cosmic-tertiary bg-clip-text text-transparent cursor-pointer',
                     onClick: () => setShowAbout(true),
@@ -3107,7 +3099,8 @@ function App() {
                     title: 'recording starts in...'
                 }, String(countdown)),
                 React.createElement('div', {
-                    className: 'voice-selector'
+                    className: 'voice-selector',
+                    ref: voiceSelectorRef
                 },
                     ['square', 'sawtooth', 'triangle'].map(wave => 
                         React.createElement('button', {
@@ -3193,7 +3186,7 @@ function App() {
                 React.createElement('button', {
                     className: 'wallet-btn',
                     ref: walletButtonRef,
-                    title: walletAddress ? `Connected: ${walletAddress}` : 'Connect Solana wallet',
+                    title: walletAddress ? `Connected: ${walletAddress}` : 'Connect wallet',
                     onClick: async () => {
                         try {
                             await connectSolanaWallet();
@@ -3722,7 +3715,8 @@ function App() {
             className: 'workspace flex-1 grid grid-cols-2 gap-1 p-1 min-h-0 overflow-hidden'
         },
             React.createElement('div', {
-                className: 'chord-grid-root bg-cosmic-panel rounded flex flex-col overflow-hidden p-1'
+                className: 'chord-grid-root bg-cosmic-panel rounded flex flex-col overflow-hidden p-1',
+                ref: chordGridRef
             },
                 React.createElement('div', {
                     className: 'chord-grid',
