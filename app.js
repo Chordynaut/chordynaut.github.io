@@ -13,15 +13,15 @@ function SolanaMark({ className = '' } = {}) {
     );
 }
 
-const CHORDYSOL_SIGNED_BUNDLE_SCHEMA = 'chordysol.signed_bundle.v1';
-const CHORDYSOL_APP_VERSION = '2026-05-04-signed-bundle-v1';
-const CHORDYSOL_TUTORIAL_SEEN_KEY = 'chordysol.tutorialSeen.v1';
+const CHORDYNAUT_SIGNED_BUNDLE_SCHEMA = 'chordynaut.signed_bundle.v1';
+const CHORDYNAUT_APP_VERSION = '2026-05-30-pages-v1';
+const CHORDYNAUT_TUTORIAL_SEEN_KEY = 'chordynaut.tutorialSeen.v1';
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-const CHORDYSOL_TUTORIAL_STEPS = [
+const CHORDYNAUT_TUTORIAL_STEPS = [
     {
         anchor: 'wallet',
         title: '1. Connect your Solana wallet',
-        body: 'Use the wallet button in the top bar. Chordysol uses your wallet to sign the finished bundle; it does not write anything onchain.'
+        body: 'Use the wallet button in the top bar. Chordynaut uses your wallet to sign the finished bundle; it does not write anything onchain.'
     },
     {
         anchor: 'strum',
@@ -41,7 +41,7 @@ const CHORDYSOL_TUTORIAL_STEPS = [
     {
         anchor: 'download',
         title: '5. Verify another bundle',
-        body: 'Use import signed bundle to check someone else\'s zip. Chordysol recalculates hashes and confirms which Solana address signed it.'
+        body: 'Use import signed bundle to check someone else\'s zip. Chordynaut recalculates hashes and confirms which Solana address signed it.'
     }
 ];
 
@@ -118,9 +118,9 @@ function shortWallet(address) {
 
 function buildBundleMessage({ creatorWallet, createdAt, audioHash, performanceHash }) {
     return [
-        'Chordysol Signed Bundle v1',
+        'Chordynaut Signed Bundle v1',
         `app: ${window.location.origin}${window.location.pathname}`,
-        `schema: ${CHORDYSOL_SIGNED_BUNDLE_SCHEMA}`,
+        `schema: ${CHORDYNAUT_SIGNED_BUNDLE_SCHEMA}`,
         `creator: ${creatorWallet}`,
         `createdAt: ${createdAt}`,
         `audioSha256: ${audioHash}`,
@@ -481,6 +481,11 @@ class AudioEngine {
         this.masterGain = null;
         this.chordBus = null;
         this.strumBus = null;
+        this.playbackOnlyGain = null;
+        this.playbackOnlyCapture = false;
+        this.outputCompressor = null;
+        this.outputSafetyGain = null;
+        this.outputSoftClipper = null;
         this.voices = new Map();
         this.maxVoices = 16;
         this.waveform = 'square';
@@ -498,6 +503,7 @@ class AudioEngine {
         this.mediaStreamDest = null;
         this.mediaRecorder = null;
         this.recordedChunks = [];
+        this.recordingPurpose = null;
     }
 
     init(existingContext = null) {
@@ -514,19 +520,38 @@ class AudioEngine {
             this.strumBus.gain.value = 1.0;
             this.strumBus.connect(this.masterGain);
             
-            const compressor = this.audioContext.createDynamicsCompressor();
-            compressor.threshold.value = -20;
-            compressor.knee.value = 10;
-            compressor.ratio.value = 12;
-            compressor.attack.value = 0;
-            compressor.release.value = 0.25;
+            this.outputCompressor = this.audioContext.createDynamicsCompressor();
+            this.outputCompressor.threshold.value = -20;
+            this.outputCompressor.knee.value = 10;
+            this.outputCompressor.ratio.value = 12;
+            this.outputCompressor.attack.value = 0;
+            this.outputCompressor.release.value = 0.25;
+
+            this.outputSafetyGain = this.audioContext.createGain();
+            this.outputSafetyGain.gain.value = 0.82;
+
+            this.outputSoftClipper = this.audioContext.createWaveShaper();
+            const curve = new Float32Array(2048);
+            for (let i = 0; i < curve.length; i++) {
+                const x = (i / (curve.length - 1)) * 2 - 1;
+                curve[i] = Math.tanh(1.8 * x) / Math.tanh(1.8);
+            }
+            this.outputSoftClipper.curve = curve;
+            this.outputSoftClipper.oversample = '2x';
             
-            this.masterGain.connect(compressor);
-            compressor.connect(this.audioContext.destination);
+            this.masterGain.connect(this.outputCompressor);
+            this.outputCompressor.connect(this.outputSafetyGain);
+            this.outputSafetyGain.connect(this.outputSoftClipper);
+            this.outputSoftClipper.connect(this.audioContext.destination);
             
             // Setup recorder destination
             this.mediaStreamDest = this.audioContext.createMediaStreamDestination();
             this.masterGain.connect(this.mediaStreamDest);
+
+            // Audible playback that should not be baked into loop overdubs.
+            this.playbackOnlyGain = this.audioContext.createGain();
+            this.playbackOnlyGain.gain.value = 1.0;
+            this.playbackOnlyGain.connect(this.outputCompressor);
         }
         
         if (this.audioContext.state === 'suspended') {
@@ -534,17 +559,40 @@ class AudioEngine {
         }
     }
 
-    startRecording() {
-        if (!this.mediaStreamDest) return;
+    isRecordingAudio() {
+        return !!this.mediaRecorder && this.mediaRecorder.state === 'recording';
+    }
+
+    setPlaybackOnlyCapture(enabled) {
+        if (!this.playbackOnlyGain || !this.mediaStreamDest || this.playbackOnlyCapture === enabled) return;
+
+        try {
+            if (enabled) {
+                this.playbackOnlyGain.connect(this.mediaStreamDest);
+            } else {
+                this.playbackOnlyGain.disconnect(this.mediaStreamDest);
+            }
+            this.playbackOnlyCapture = enabled;
+        } catch (err) {
+            this.playbackOnlyCapture = enabled;
+        }
+    }
+
+    startRecording(purpose = 'generic') {
+        this.init();
+        if (!this.mediaStreamDest || this.isRecordingAudio()) return false;
         
         this.recordedChunks = [];
         this.mediaRecorder = new MediaRecorder(this.mediaStreamDest.stream);
+        this.recordingPurpose = purpose;
+        this.setPlaybackOnlyCapture(purpose === 'performance');
         this.mediaRecorder.ondataavailable = e => {
             if (e.data.size > 0) {
                 this.recordedChunks.push(e.data);
             }
         };
         this.mediaRecorder.start();
+        return true;
     }
 
     async stopRecording() {
@@ -556,9 +604,15 @@ class AudioEngine {
                     const blob = new Blob(this.recordedChunks, { type: 'audio/webm' });
                     const arrayBuffer = await blob.arrayBuffer();
                     const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
+                    this.setPlaybackOnlyCapture(false);
+                    this.recordingPurpose = null;
+                    this.mediaRecorder = null;
                     resolve(audioBuffer);
                 } catch (err) {
                     console.error('Error decoding audio:', err);
+                    this.setPlaybackOnlyCapture(false);
+                    this.recordingPurpose = null;
+                    this.mediaRecorder = null;
                     resolve(null);
                 }
             };
@@ -568,6 +622,93 @@ class AudioEngine {
 
     midiToFreq(midi) {
         return 440 * Math.pow(2, (midi - 69) / 12);
+    }
+
+    startGranularSample(sampleData, ratio, gainNode, startedAt) {
+        const ac = this.audioContext;
+        const buffer = sampleData.buffer;
+        const loopStart = Math.max(0, sampleData.loopStart || 0);
+        const loopEnd = Math.min(buffer.duration, sampleData.loopEnd || buffer.duration);
+        const loopDuration = Math.max(0.08, loopEnd - loopStart);
+        const grainDuration = Math.min(0.12, Math.max(0.055, loopDuration / 2));
+        const grainHop = grainDuration / 2;
+        const grainFade = Math.min(0.018, grainDuration / 4);
+        const scheduleAhead = 0.16;
+        const grainPeak = 0.62;
+
+        const grains = new Set();
+        let nextTime = startedAt;
+        let timer = null;
+        let stopTime = Infinity;
+        let active = true;
+
+        const clampOffset = (offset) => {
+            const readSpan = grainDuration * Math.max(1, ratio) + 0.01;
+            const maxOffset = Math.max(loopStart, loopEnd - readSpan);
+            if (maxOffset <= loopStart) return loopStart;
+            return Math.max(loopStart, Math.min(maxOffset, offset));
+        };
+
+        const scheduleGrain = (when) => {
+            const source = ac.createBufferSource();
+            const grainGain = ac.createGain();
+            const elapsed = Math.max(0, when - startedAt);
+            const readSpan = grainDuration * Math.max(1, ratio) + 0.01;
+            const usableDuration = Math.max(grainHop, loopDuration - readSpan);
+            const offset = clampOffset(loopStart + (elapsed % usableDuration));
+
+            source.buffer = buffer;
+            source.playbackRate.setValueAtTime(ratio, when);
+            grainGain.gain.setValueAtTime(0.0001, when);
+            grainGain.gain.linearRampToValueAtTime(grainPeak, when + grainFade);
+            grainGain.gain.setValueAtTime(grainPeak, Math.max(when + grainFade, when + grainDuration - grainFade));
+            grainGain.gain.linearRampToValueAtTime(0.0001, when + grainDuration);
+            source.connect(grainGain).connect(gainNode);
+
+            source.onended = () => grains.delete(source);
+            grains.add(source);
+
+            try {
+                source.start(when, offset);
+                source.stop(when + grainDuration + 0.02);
+            } catch (err) {
+                grains.delete(source);
+            }
+        };
+
+        const schedule = () => {
+            const now = ac.currentTime;
+            const horizon = Math.min(now + scheduleAhead, stopTime);
+
+            while (nextTime < horizon) {
+                scheduleGrain(nextTime);
+                nextTime += grainHop;
+            }
+
+            if (active || nextTime < stopTime) {
+                timer = setTimeout(schedule, 35);
+            } else {
+                timer = null;
+            }
+        };
+
+        schedule();
+
+        return {
+            stop: (when = ac.currentTime) => {
+                stopTime = Math.min(stopTime, when);
+                active = false;
+                if (when <= ac.currentTime + 0.02 && timer) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                grains.forEach(grain => {
+                    try {
+                        grain.stop(Math.max(ac.currentTime, when + 0.03));
+                    } catch (err) {}
+                });
+            }
+        };
     }
 
     noteOn(midiNote, velocity = 1.0, isChord = false, sampleData = null) {
@@ -603,19 +744,15 @@ class AudioEngine {
 
         // Use sampled voice if provided
         if (sampleData && sampleData.buffer) {
-            source = this.audioContext.createBufferSource();
-            source.buffer = sampleData.buffer;
-            source.loop = true;
             const ratio = freq / sampleData.baseFreq;
-            source.playbackRate.value = ratio;
             
             filter = this.audioContext.createBiquadFilter();
             filter.type = 'lowpass';
             filter.frequency.value = freq * 3;
             filter.Q.value = 1;
             
-            source.connect(gainNode).connect(filter).connect(bus);
-            source.start(now);
+            gainNode.connect(filter).connect(bus);
+            source = this.startGranularSample(sampleData, ratio, gainNode, now);
         } else {
             // Use oscillator
             source = this.audioContext.createOscillator();
@@ -835,29 +972,226 @@ function buildMelodyLaneNotes({ tonicPc, modeId, laneCount, topMidi = 84, bottom
     return desc.slice(0, laneCount);
 }
 
-// Pitch detection using autocorrelation
-function detectPitch(data, sampleRate) {
-    let bestOffset = -1, bestCorr = 0;
-    for (let offset = 50; offset < 1000; offset++) {
-        let corr = 0;
-        for (let i = 0; i < data.length - offset; i++) {
-            corr += data[i] * data[i + offset];
-        }
-        if (corr > bestCorr) {
-            bestCorr = corr;
-            bestOffset = offset;
+function nearestZeroCrossing(data, target, radius) {
+    const start = Math.max(1, target - radius);
+    const end = Math.min(data.length - 1, target + radius);
+    let best = Math.max(0, Math.min(data.length - 1, target));
+    let bestScore = Math.abs(data[best]);
+
+    for (let i = start; i <= end; i++) {
+        const signChange = (data[i - 1] <= 0 && data[i] >= 0) || (data[i - 1] >= 0 && data[i] <= 0);
+        const score = signChange ? 0 : Math.abs(data[i]);
+        if (score < bestScore) {
+            best = i;
+            bestScore = score;
+            if (score === 0) break;
         }
     }
-    return bestOffset > 0 ? sampleRate / bestOffset : 440;
+
+    return best;
+}
+
+function preprocessSampleData(raw, sampleRate) {
+    if (!raw || !raw.length) {
+        return { data: new Float32Array(1), loopStart: 0, loopEnd: 0 };
+    }
+
+    let mean = 0;
+    for (let i = 0; i < raw.length; i++) mean += raw[i];
+    mean /= raw.length;
+
+    const centered = new Float32Array(raw.length);
+    let peak = 0;
+    for (let i = 0; i < raw.length; i++) {
+        const v = raw[i] - mean;
+        centered[i] = v;
+        peak = Math.max(peak, Math.abs(v));
+    }
+
+    if (peak < 0.004) {
+        return { data: centered, loopStart: 0, loopEnd: centered.length / sampleRate, tooQuiet: true };
+    }
+
+    const windowSize = Math.max(128, Math.floor(sampleRate * 0.006));
+    const threshold = Math.max(0.008, peak * 0.035);
+    let first = 0;
+    let last = centered.length - 1;
+    let foundStart = false;
+
+    for (let i = 0; i < centered.length; i += windowSize) {
+        let sum = 0;
+        const end = Math.min(centered.length, i + windowSize);
+        for (let j = i; j < end; j++) sum += centered[j] * centered[j];
+        const rms = Math.sqrt(sum / Math.max(1, end - i));
+        if (rms > threshold) {
+            first = i;
+            foundStart = true;
+            break;
+        }
+    }
+
+    for (let i = centered.length - windowSize; i >= 0; i -= windowSize) {
+        let sum = 0;
+        const end = Math.min(centered.length, i + windowSize);
+        for (let j = i; j < end; j++) sum += centered[j] * centered[j];
+        const rms = Math.sqrt(sum / Math.max(1, end - i));
+        if (rms > threshold) {
+            last = end;
+            break;
+        }
+    }
+
+    if (!foundStart || last <= first) {
+        first = 0;
+        last = centered.length;
+    }
+
+    const pad = Math.floor(sampleRate * 0.03);
+    first = Math.max(0, first - pad);
+    last = Math.min(centered.length, last + pad);
+
+    const minLength = Math.min(centered.length, Math.floor(sampleRate * 0.16));
+    if (last - first < minLength) {
+        const mid = Math.floor((first + last) / 2);
+        first = Math.max(0, mid - Math.floor(minLength / 2));
+        last = Math.min(centered.length, first + minLength);
+    }
+
+    const trimmed = centered.slice(first, last);
+    let trimmedPeak = 0;
+    for (let i = 0; i < trimmed.length; i++) trimmedPeak = Math.max(trimmedPeak, Math.abs(trimmed[i]));
+
+    const gain = trimmedPeak > 0 ? Math.min(8, 0.86 / trimmedPeak) : 1;
+    const fadeIn = Math.min(Math.floor(sampleRate * 0.008), Math.floor(trimmed.length / 8));
+    const fadeOut = Math.min(Math.floor(sampleRate * 0.025), Math.floor(trimmed.length / 6));
+
+    for (let i = 0; i < trimmed.length; i++) {
+        let env = 1;
+        if (fadeIn > 0 && i < fadeIn) env *= i / fadeIn;
+        if (fadeOut > 0 && i > trimmed.length - fadeOut) env *= (trimmed.length - i) / fadeOut;
+        trimmed[i] = Math.max(-1, Math.min(1, trimmed[i] * gain * env));
+    }
+
+    const loopPad = Math.min(Math.floor(sampleRate * 0.025), Math.floor(trimmed.length / 5));
+    const searchRadius = Math.floor(sampleRate * 0.012);
+    let loopStartIndex = nearestZeroCrossing(trimmed, loopPad, searchRadius);
+    let loopEndIndex = nearestZeroCrossing(trimmed, Math.max(loopStartIndex + 1, trimmed.length - loopPad), searchRadius);
+
+    if (loopEndIndex - loopStartIndex < Math.floor(sampleRate * 0.08)) {
+        loopStartIndex = 0;
+        loopEndIndex = trimmed.length;
+    }
+
+    return {
+        data: trimmed,
+        loopStart: loopStartIndex / sampleRate,
+        loopEnd: loopEndIndex / sampleRate,
+        tooQuiet: false
+    };
+}
+
+function strongestPitchWindow(data, sampleRate) {
+    const size = Math.min(data.length, Math.max(2048, Math.min(8192, Math.floor(sampleRate * 0.18))));
+    if (data.length <= size) return data;
+
+    const step = Math.max(256, Math.floor(size / 4));
+    let bestStart = 0;
+    let bestRms = 0;
+
+    for (let start = 0; start <= data.length - size; start += step) {
+        let sum = 0;
+        for (let i = 0; i < size; i++) {
+            const v = data[start + i];
+            sum += v * v;
+        }
+        const rms = Math.sqrt(sum / size);
+        if (rms > bestRms) {
+            bestRms = rms;
+            bestStart = start;
+        }
+    }
+
+    return data.subarray(bestStart, bestStart + size);
+}
+
+// Pitch detection using normalized autocorrelation on the strongest sample window.
+function detectPitch(data, sampleRate) {
+    const segment = strongestPitchWindow(data, sampleRate);
+    if (!segment || segment.length < 512) return { frequency: 440, confidence: 0 };
+
+    let mean = 0;
+    for (let i = 0; i < segment.length; i++) mean += segment[i];
+    mean /= segment.length;
+
+    const minFreq = 70;
+    const maxFreq = 1200;
+    const minLag = Math.max(1, Math.floor(sampleRate / maxFreq));
+    const maxLag = Math.min(segment.length - 2, Math.floor(sampleRate / minFreq));
+    const usable = segment.length - maxLag;
+    if (usable < 256) return { frequency: 440, confidence: 0 };
+
+    let bestLag = -1;
+    let bestScore = 0;
+    const scores = new Float32Array(maxLag + 1);
+
+    for (let lag = minLag; lag <= maxLag; lag++) {
+        let corr = 0;
+        let e1 = 0;
+        let e2 = 0;
+
+        for (let i = 0; i < usable; i++) {
+            const a = segment[i] - mean;
+            const b = segment[i + lag] - mean;
+            corr += a * b;
+            e1 += a * a;
+            e2 += b * b;
+        }
+
+        const score = e1 > 0 && e2 > 0 ? corr / Math.sqrt(e1 * e2) : 0;
+        scores[lag] = score;
+        if (score > bestScore) {
+            bestScore = score;
+            bestLag = lag;
+        }
+    }
+
+    if (bestLag < 0 || bestScore < 0.22) {
+        return { frequency: 440, confidence: Math.max(0, bestScore) };
+    }
+
+    const prev = scores[bestLag - 1] || bestScore;
+    const next = scores[bestLag + 1] || bestScore;
+    const denom = prev - 2 * bestScore + next;
+    const correction = Math.abs(denom) > 0.000001 ? 0.5 * (prev - next) / denom : 0;
+    const refinedLag = bestLag + Math.max(-0.5, Math.min(0.5, correction));
+
+    return {
+        frequency: sampleRate / refinedLag,
+        confidence: bestScore
+    };
 }
 
 // Orientation check
+function shouldEnforceLandscape() {
+    const params = new URLSearchParams(window.location.search);
+    const embedMode = params.get('embedMode');
+
+    if (embedMode === 'square') return false;
+    if (embedMode === 'maximized') return true;
+    if (params.get('forceLandscape') === '1') return true;
+    if (window.self !== window.top) return false;
+    return true;
+}
+
 function checkOrientation() {
     const isLandscape = window.innerWidth > window.innerHeight;
     const orientationLock = document.getElementById('orientation-lock');
     const root = document.getElementById('root');
+    const enforceLandscape = shouldEnforceLandscape();
     
-    if (isLandscape) {
+    if (!orientationLock || !root) return;
+
+    if (!enforceLandscape || isLandscape) {
         orientationLock.style.display = 'none';
         root.classList.remove('hidden');
         setTimeout(() => {
@@ -872,6 +1206,89 @@ function checkOrientation() {
 function isIOS() {
     return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
            (navigator.userAgent.includes("Mac") && "ontouchend" in document);
+}
+
+function getFullscreenElement() {
+    return document.fullscreenElement ||
+           document.webkitFullscreenElement ||
+           document.msFullscreenElement ||
+           null;
+}
+
+function isStandaloneDisplayMode() {
+    return window.matchMedia('(display-mode: fullscreen)').matches ||
+           window.matchMedia('(display-mode: standalone)').matches ||
+           window.navigator.standalone === true;
+}
+
+function isBrowserChromeNudged() {
+    return document.documentElement.classList.contains('browser-chrome-nudge');
+}
+
+function canRequestFullscreen() {
+    const el = document.documentElement;
+    return !!(el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen);
+}
+
+function nudgeBrowserChrome() {
+    document.documentElement.classList.add('browser-chrome-nudge');
+    if (window.recomputeLayout) window.recomputeLayout();
+
+    const scrollOnce = () => {
+        try {
+            window.scrollTo(0, 1);
+        } catch (err) {}
+    };
+
+    requestAnimationFrame(scrollOnce);
+    setTimeout(scrollOnce, 80);
+    setTimeout(scrollOnce, 240);
+}
+
+function clearBrowserChromeNudge() {
+    document.documentElement.classList.remove('browser-chrome-nudge');
+    try {
+        window.scrollTo(0, 0);
+    } catch (err) {}
+    if (window.recomputeLayout) window.recomputeLayout();
+}
+
+async function requestAppFullscreen() {
+    const el = document.documentElement;
+
+    if (el.requestFullscreen) {
+        await el.requestFullscreen();
+    } else if (el.webkitRequestFullscreen) {
+        el.webkitRequestFullscreen();
+    } else if (el.msRequestFullscreen) {
+        el.msRequestFullscreen();
+    } else {
+        throw new Error('Fullscreen API is not available');
+    }
+
+    if (screen.orientation && screen.orientation.lock) {
+        try {
+            await screen.orientation.lock('landscape');
+        } catch (err) {
+            // Orientation locking is optional and often blocked by mobile browsers.
+        }
+    }
+}
+
+async function exitAppFullscreen() {
+    if (document.exitFullscreen) {
+        await document.exitFullscreen();
+    } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+    } else if (document.msExitFullscreen) {
+        document.msExitFullscreen();
+    }
+
+    if (screen.orientation && screen.orientation.unlock) {
+        try {
+            screen.orientation.unlock();
+        } catch (err) {}
+    }
 }
 
 // iOS Audio Start Overlay Component
@@ -912,7 +1329,7 @@ function IOSStartOverlay({ onStart }) {
 }
 
 // About Overlay Component
-function AboutOverlay({ onClose }) {
+function AboutOverlay({ onClose, fullscreenMessage = '' }) {
     const isMobile = window.innerWidth < 1024;
 
     useEffect(() => {
@@ -947,7 +1364,7 @@ function AboutOverlay({ onClose }) {
                     color: '#e94560',
                     textAlign: 'center'
                 }
-            }, 'About Chordysol'),
+            }, 'About Chordynaut'),
             
             React.createElement('div', {
                 style: {
@@ -961,7 +1378,7 @@ function AboutOverlay({ onClose }) {
                     React.createElement(SolanaMark, { className: 'about-solana-mark' })
                 ),
                 React.createElement('p', { style: { marginBottom: '15px' } },
-                    'Chordysol is forked from Chordynaut to integrate Solana into a human-first music creation workflow.'
+                    'Chordynaut integrates Solana into a human-first music creation workflow.'
                 ),
                 React.createElement('p', { style: { marginBottom: '15px' } },
                     'The goal is not to replace musicians with chains. It is to let people create pieces with their hands, ears, timing, mistakes, and taste, then use blockchain records to preserve attribution, provenance, and the human-ness of the work.'
@@ -989,9 +1406,15 @@ function AboutOverlay({ onClose }) {
                 React.createElement('p', null,
                     'This instrument is inspired by the autoharps of the early 20th century as well as the Suzuki Omnichord, a digital harp created in the 1980s.'
                 ),
+                React.createElement('p', null,
+                    'To be presented at 97Kobolab, Jakarta.'
+                ),
                 isMobile && React.createElement('p', {
                     style: { marginTop: '1em', fontSize: '0.9em', opacity: 0.8, textAlign: 'center' }
-                }, 'For the best experience, scroll up once until this app fills your screen, then press OK.')
+                }, 'For the best experience, use the fullscreen button. If your browser blocks fullscreen, drag this panel up once until the app fills the screen, then press OK.'),
+                fullscreenMessage && React.createElement('p', {
+                    style: { marginTop: '1em', fontSize: '0.9em', opacity: 0.9, textAlign: 'center', color: '#2ec4b6' }
+                }, fullscreenMessage)
             ),
             
             React.createElement('button', {
@@ -1040,7 +1463,7 @@ function TutorialBubble({ step, index, total, anchorRect, onNext, onSkip }) {
         className: 'tutorial-layer',
         role: 'dialog',
         'aria-live': 'polite',
-        'aria-label': 'Chordysol quick start'
+        'aria-label': 'Chordynaut quick start'
     },
         React.createElement('div', {
             className: 'tutorial-bubble',
@@ -1095,10 +1518,10 @@ function App() {
     const [waveform, setWaveform] = useState('square');
     const [adsr, setAdsr] = useState({ attack: 10, decay: 100, sustain: 70, release: 200 });
     const [tonic, setTonic] = useState(() => {
-        return localStorage.getItem('chordysol.tonic') || 'F';
+        return localStorage.getItem('chordynaut.tonic') || 'F';
     });
     const [mode, setMode] = useState(() => {
-        return localStorage.getItem('chordysol.mode') || 'ionian';
+        return localStorage.getItem('chordynaut.mode') || 'ionian';
     });
     const [latch, setLatch] = useState(false);
     const [chordVolume, setChordVolume] = useState(1.0);
@@ -1110,6 +1533,10 @@ function App() {
     const [showIOSOverlay, setShowIOSOverlay] = useState(isIOS());
     const [showConfig, setShowConfig] = useState(false);
     const [showAbout, setShowAbout] = useState(false);
+    const [isFullscreenActive, setIsFullscreenActive] = useState(() => {
+        return !!getFullscreenElement() || isStandaloneDisplayMode() || isBrowserChromeNudged();
+    });
+    const [fullscreenMessage, setFullscreenMessage] = useState('');
     const [tutorialStepIndex, setTutorialStepIndex] = useState(-1);
     const [tutorialAnchorRect, setTutorialAnchorRect] = useState(null);
     const shouldStartTutorialAfterAboutRef = useRef(false);
@@ -1127,7 +1554,10 @@ function App() {
     const [sampleData, setSampleData] = useState({
         buffer: null,
         baseFreq: 440,
-        isActive: false
+        isActive: false,
+        loopStart: 0,
+        loopEnd: 0,
+        pitchConfidence: 0
     });
     const [currentVoice, setCurrentVoice] = useState('square');
     const [isRecordingSample, setIsRecordingSample] = useState(false);
@@ -1156,10 +1586,14 @@ function App() {
     const [isOverdubbing, setIsOverdubbing] = useState(false);
     const [loopStartedMetronome, setLoopStartedMetronome] = useState(false);
     const loopStartTimeRef = useRef(0);
+    const loopRecordTimeoutRef = useRef(null);
+    const loopRecordingTokenRef = useRef(0);
+    const loopBuffersRef = useRef([]);
+    const playbackTimeoutsRef = useRef([]);
     
     // Loop length state with persistence
     const [loopLength, setLoopLength] = useState(() => {
-        const v = localStorage.getItem('chordysol.loopBars');
+        const v = localStorage.getItem('chordynaut.loopBars');
         const n = v ? parseInt(v, 10) : 4;
         return Number.isFinite(n) && n > 0 ? n : 4;
     });
@@ -1168,8 +1602,12 @@ function App() {
     const [isClearLoopConfirmOpen, setIsClearLoopConfirmOpen] = useState(false);
     
     useEffect(() => {
-        localStorage.setItem('chordysol.loopBars', String(loopLength));
+        localStorage.setItem('chordynaut.loopBars', String(loopLength));
     }, [loopLength]);
+
+    useEffect(() => {
+        loopBuffersRef.current = loopBuffers;
+    }, [loopBuffers]);
     
     // Download state
     const [isDownloadOpen, setIsDownloadOpen] = useState(false);
@@ -1185,18 +1623,28 @@ function App() {
     
     const chordPointersRef = useRef(new Map());
     const currentChordRef = useRef(null);
+    const activeChordPointerIdRef = useRef(null);
+    const chordPointerOrderRef = useRef(0);
     
     // Melody mode override
     const strumNotesOverrideRef = useRef(null);
 
+    const [chordDragSwitch, setChordDragSwitch] = useState(() => {
+        return localStorage.getItem('chordynaut.chordDragSwitch') !== '0';
+    });
+
     // Persist tonic and mode
     useEffect(() => {
-        localStorage.setItem('chordysol.tonic', tonic);
+        localStorage.setItem('chordynaut.tonic', tonic);
     }, [tonic]);
 
     useEffect(() => {
-        localStorage.setItem('chordysol.mode', mode);
+        localStorage.setItem('chordynaut.mode', mode);
     }, [mode]);
+
+    useEffect(() => {
+        localStorage.setItem('chordynaut.chordDragSwitch', chordDragSwitch ? '1' : '0');
+    }, [chordDragSwitch]);
 
     const ROOTS = useMemo(() => {
         const chromatic = chordGenRef.current.chromatic;
@@ -1243,14 +1691,14 @@ function App() {
     const beatsPerBar = useMemo(() => parseInt(timeSignature.split("/")[0]), [timeSignature]);
 
     const finishTutorial = useCallback(() => {
-        localStorage.setItem(CHORDYSOL_TUTORIAL_SEEN_KEY, 'yes');
+        localStorage.setItem(CHORDYNAUT_TUTORIAL_SEEN_KEY, 'yes');
         setTutorialStepIndex(-1);
     }, []);
 
     const advanceTutorial = useCallback(() => {
         setTutorialStepIndex(current => {
-            if (current + 1 >= CHORDYSOL_TUTORIAL_STEPS.length) {
-                localStorage.setItem(CHORDYSOL_TUTORIAL_SEEN_KEY, 'yes');
+            if (current + 1 >= CHORDYNAUT_TUTORIAL_STEPS.length) {
+                localStorage.setItem(CHORDYNAUT_TUTORIAL_SEEN_KEY, 'yes');
                 return -1;
             }
             return current + 1;
@@ -1272,7 +1720,7 @@ function App() {
         }
 
         const updateAnchor = () => {
-            const step = CHORDYSOL_TUTORIAL_STEPS[tutorialStepIndex];
+            const step = CHORDYNAUT_TUTORIAL_STEPS[tutorialStepIndex];
             const element = getTutorialAnchorElement(step?.anchor);
             if (!element) {
                 setTutorialAnchorRect(null);
@@ -1311,13 +1759,37 @@ function App() {
     }, [getTutorialAnchorElement, tutorialStepIndex]);
 
     useEffect(() => {
-        const hasSeenTutorial = localStorage.getItem(CHORDYSOL_TUTORIAL_SEEN_KEY) === 'yes';
+        const hasSeenTutorial = localStorage.getItem(CHORDYNAUT_TUTORIAL_SEEN_KEY) === 'yes';
         if (hasSeenTutorial) return undefined;
         shouldStartTutorialAfterAboutRef.current = true;
         const timer = setTimeout(() => {
             setShowAbout(true);
         }, 400);
         return () => clearTimeout(timer);
+    }, []);
+
+    useEffect(() => {
+        const syncFullscreenState = () => {
+            setIsFullscreenActive(!!getFullscreenElement() || isStandaloneDisplayMode() || isBrowserChromeNudged());
+            checkOrientation();
+            if (window.recomputeLayout) {
+                setTimeout(() => window.recomputeLayout(), 0);
+            }
+        };
+
+        document.addEventListener('fullscreenchange', syncFullscreenState);
+        document.addEventListener('webkitfullscreenchange', syncFullscreenState);
+        window.addEventListener('resize', syncFullscreenState);
+        window.addEventListener('orientationchange', syncFullscreenState);
+
+        syncFullscreenState();
+
+        return () => {
+            document.removeEventListener('fullscreenchange', syncFullscreenState);
+            document.removeEventListener('webkitfullscreenchange', syncFullscreenState);
+            window.removeEventListener('resize', syncFullscreenState);
+            window.removeEventListener('orientationchange', syncFullscreenState);
+        };
     }, []);
 
     // Universal countdown helper
@@ -1488,9 +1960,9 @@ function App() {
     }, [audioBufferToWav, loopBuffers]);
 
     const buildPerformancePayload = useCallback((source, events, createdAt) => ({
-        schema: 'chordysol.performance.v1',
-        app: 'Chordysol',
-        appVersion: CHORDYSOL_APP_VERSION,
+        schema: 'chordynaut.performance.v1',
+        app: 'Chordynaut',
+        appVersion: CHORDYNAUT_APP_VERSION,
         type: source,
         createdAt,
         events,
@@ -1504,7 +1976,7 @@ function App() {
             currentVoice,
             adsr
         },
-        creationInterface: 'direct Chordysol browser performance'
+        creationInterface: 'direct Chordynaut browser performance'
     }), [adsr, bpm, currentVoice, loopLength, mode, timeSignature, tonic, waveform]);
 
     const getSignedBundleArtifacts = useCallback(() => {
@@ -1556,10 +2028,10 @@ function App() {
             const signature = bytesToBase64(signatureBytes instanceof Uint8Array ? signatureBytes : new Uint8Array(signatureBytes));
 
             const receipt = {
-                schema: CHORDYSOL_SIGNED_BUNDLE_SCHEMA,
-                app: 'Chordysol',
+                schema: CHORDYNAUT_SIGNED_BUNDLE_SCHEMA,
+                app: 'Chordynaut',
                 appUrl: `${window.location.origin}${window.location.pathname}`,
-                appVersion: CHORDYSOL_APP_VERSION,
+                appVersion: CHORDYNAUT_APP_VERSION,
                 createdAt,
                 creatorWallet: address,
                 audio: {
@@ -1596,11 +2068,11 @@ function App() {
             zip.file('performance.json', performanceText);
             zip.file('receipt.json', JSON.stringify(receipt, null, 2));
             const bundle = await zip.generateAsync({ type: 'blob' });
-            saveBlob(`chordysol_signed_bundle_${ts()}.zip`, bundle);
+            saveBlob(`chordynaut_signed_bundle_${ts()}.zip`, bundle);
             setBundleStatus(`signed bundle by ${shortWallet(receipt.creatorWallet)} downloaded`);
             setWalletAddress(receipt.creatorWallet);
         } catch (error) {
-            console.error('[chordysol] signed bundle failed', error);
+            console.error('[chordynaut] signed bundle failed', error);
             setBundleStatus(error.message || 'Unable to sign bundle.');
         } finally {
             setIsSigningBundle(false);
@@ -1617,8 +2089,8 @@ function App() {
             const receiptFile = zip.file('receipt.json');
             if (!receiptFile) throw new Error('Bundle is missing receipt.json.');
             const receipt = JSON.parse(await receiptFile.async('text'));
-            if (receipt.schema !== CHORDYSOL_SIGNED_BUNDLE_SCHEMA) {
-                throw new Error('This is not a Chordysol signed bundle receipt.');
+            if (receipt.schema !== CHORDYNAUT_SIGNED_BUNDLE_SCHEMA) {
+                throw new Error('This is not a Chordynaut signed bundle receipt.');
             }
 
             const audioFile = zip.file(receipt.audio?.file || 'audio.wav');
@@ -1676,10 +2148,10 @@ function App() {
             if (state.adsr) setAdsr(state.adsr);
 
             setWalletAddress(receipt.creatorWallet);
-            setBundleStatus(`verified Chordysol bundle signed by ${receipt.creatorWallet}`);
+            setBundleStatus(`verified Chordynaut bundle signed by ${receipt.creatorWallet}`);
             setIsDownloadOpen(true);
         } catch (error) {
-            console.error('[chordysol] signed bundle import failed', error);
+            console.error('[chordynaut] signed bundle import failed', error);
             setBundleStatus(error.message || 'Unable to verify bundle.');
             setIsDownloadOpen(true);
         } finally {
@@ -1759,7 +2231,7 @@ function App() {
         const zip = new JSZip();
         files.forEach(f => zip.file(f.name, f.blob));
         const blob = await zip.generateAsync({ type: 'blob' });
-        saveBlob(`chordysol_export_${stamp}.zip`, blob);
+        saveBlob(`chordynaut_export_${stamp}.zip`, blob);
         setIsDownloadOpen(false);
     }, [bpm, timeSignature, tonic, loopBuffers, ts, saveBlob, audioBufferToWav]);
 
@@ -1768,10 +2240,76 @@ function App() {
         setShowIOSOverlay(false);
     }, []);
 
+    const handleFullscreenClick = useCallback(async () => {
+        if (isBrowserChromeNudged() && !getFullscreenElement() && !isStandaloneDisplayMode()) {
+            clearBrowserChromeNudge();
+            setFullscreenMessage('');
+            setIsFullscreenActive(false);
+            return;
+        }
+
+        if (isStandaloneDisplayMode()) {
+            setFullscreenMessage('');
+            setIsFullscreenActive(true);
+            if (window.recomputeLayout) window.recomputeLayout();
+            return;
+        }
+
+        if (!canRequestFullscreen()) {
+            nudgeBrowserChrome();
+            setFullscreenMessage(
+                isIOS()
+                    ? 'iPhone Safari does not allow normal in-page fullscreen for this kind of app. Add Chordynaut to the Home Screen, then launch it from that icon for the closest fullscreen mode.'
+                    : 'This browser did not expose the Fullscreen API, so Chordynaut used the browser-chrome fallback. Drag this panel up if the address bar is still visible, then press OK.'
+            );
+            setIsFullscreenActive(true);
+            setShowAbout(true);
+            return;
+        }
+
+        try {
+            if (getFullscreenElement()) {
+                await exitAppFullscreen();
+                clearBrowserChromeNudge();
+                setIsFullscreenActive(false);
+            } else {
+                await requestAppFullscreen();
+                clearBrowserChromeNudge();
+                setIsFullscreenActive(true);
+            }
+
+            setFullscreenMessage('');
+            checkOrientation();
+            if (window.recomputeLayout) {
+                setTimeout(() => window.recomputeLayout(), 0);
+            }
+        } catch (err) {
+            nudgeBrowserChrome();
+            setFullscreenMessage(
+                isIOS()
+                    ? 'iPhone Safari blocked in-page fullscreen. Add Chordynaut to the Home Screen, then launch it from that icon for the closest fullscreen mode.'
+                    : 'Fullscreen was blocked by the browser, so Chordynaut used the browser-chrome fallback. Drag this panel up if the address bar is still visible, then press OK.'
+            );
+            setIsFullscreenActive(true);
+            setShowAbout(true);
+        }
+    }, []);
+
     // Microphone sampling function
     const startMicSample = useCallback(async () => {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    }
+                });
+            } catch (err) {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            }
             const ac = audioEngineRef.current?.audioContext || new (window.AudioContext || window.webkitAudioContext)();
             audioEngineRef.current.init(ac);
             
@@ -1802,12 +2340,21 @@ function App() {
                     offset += c.length;
                 }
 
-                const buffer = ac.createBuffer(1, merged.length, ac.sampleRate);
-                buffer.copyToChannel(merged, 0, 0);
+                const processed = preprocessSampleData(merged, ac.sampleRate);
+                const buffer = ac.createBuffer(1, processed.data.length, ac.sampleRate);
+                buffer.copyToChannel(processed.data, 0, 0);
+                const pitch = detectPitch(processed.data, ac.sampleRate);
+                const baseFreq = pitch.frequency || 440;
 
-                const baseFreq = detectPitch(merged, ac.sampleRate);
-
-                setSampleData({ buffer, baseFreq, isActive: true });
+                setSampleData({
+                    buffer,
+                    baseFreq,
+                    isActive: true,
+                    loopStart: processed.loopStart,
+                    loopEnd: processed.loopEnd,
+                    pitchConfidence: pitch.confidence || 0,
+                    tooQuiet: !!processed.tooQuiet
+                });
                 setCurrentVoice('sample');
             }, 1500);
 
@@ -1819,7 +2366,7 @@ function App() {
     }, []);
 
     const clearSample = useCallback(() => {
-        setSampleData({ buffer: null, baseFreq: 440, isActive: false });
+        setSampleData({ buffer: null, baseFreq: 440, isActive: false, loopStart: 0, loopEnd: 0, pitchConfidence: 0 });
         setCurrentVoice('square');
     }, []);
 
@@ -1915,18 +2462,22 @@ function App() {
     }, [isMetronomeOn, bpm, beatsPerBar, metronomeMuted]);
 
     // Loop playback
+    const hasLoopBuffers = loopBuffers.length > 0;
+
     useEffect(() => {
-        if (!isLooping || loopBuffers.length === 0) return;
+        if (!isLooping || !hasLoopBuffers) return;
         
         const ac = audioEngineRef.current.audioContext;
         const loopDur = loopLength * beatsPerBar * (60 / bpm);
         
         const playAllLoops = () => {
             const now = ac.currentTime;
-            loopBuffers.forEach(buffer => {
+            const output = audioEngineRef.current.playbackOnlyGain || audioEngineRef.current.masterGain;
+
+            loopBuffersRef.current.forEach(buffer => {
                 const src = ac.createBufferSource();
                 src.buffer = buffer;
-                src.connect(audioEngineRef.current.masterGain);
+                src.connect(output);
                 src.start(now);
             });
         };
@@ -1935,13 +2486,17 @@ function App() {
         const timer = setInterval(playAllLoops, loopDur * 1000);
 
         return () => clearInterval(timer);
-    }, [isLooping, loopBuffers, loopLength, bpm, beatsPerBar]);
+    }, [isLooping, hasLoopBuffers, loopLength, bpm, beatsPerBar]);
 
     useEffect(() => {
         return () => {
             if (audioEngineRef.current.loopTimer) {
                 clearInterval(audioEngineRef.current.loopTimer);
             }
+            if (loopRecordTimeoutRef.current) {
+                clearTimeout(loopRecordTimeoutRef.current);
+            }
+            playbackTimeoutsRef.current.forEach(clearTimeout);
         };
     }, []);
 
@@ -1949,6 +2504,7 @@ function App() {
         const hardKill = () => {
             audioEngineRef.current.stopAllImmediately();
             chordPointersRef.current.clear();
+            activeChordPointerIdRef.current = null;
             setActiveStrumZones(new Set());
             setStrumPointers(new Map());
             setActiveChordButton(null);
@@ -1982,68 +2538,112 @@ function App() {
         if (!ac) return;
         
         const now = ac.currentTime;
-        const event = {
-            time: now - recordStart,
-            type: type,
-            note: note,
-            velocity: velocity,
-            source: source
-        };
         
         if (isRecording) {
+            const event = {
+                time: now - recordStart,
+                type: type,
+                note: note,
+                velocity: velocity,
+                source: source
+            };
             setRecordedEvents(prev => [...prev, event]);
             performanceEventsRef.current = [...performanceEventsRef.current, event];
         }
         
         if (isOverdubbing) {
+            const loopDur = loopLength * beatsPerBar * (60 / bpm);
+            const rawLoopTime = now - loopStartTimeRef.current;
+            const loopTime = loopDur > 0 ? ((rawLoopTime % loopDur) + loopDur) % loopDur : Math.max(0, rawLoopTime);
+            const event = {
+                time: loopTime,
+                type: type,
+                note: note,
+                velocity: velocity,
+                source: 'loop'
+            };
             loopEventsRef.current = [...loopEventsRef.current, event];
         }
-    }, [isRecording, isOverdubbing, recordStart]);
+    }, [isRecording, isOverdubbing, recordStart, loopLength, beatsPerBar, bpm]);
+
+    const cancelLoopRecording = useCallback(() => {
+        if (loopRecordTimeoutRef.current) {
+            clearTimeout(loopRecordTimeoutRef.current);
+            loopRecordTimeoutRef.current = null;
+        }
+        loopRecordingTokenRef.current += 1;
+        setIsOverdubbing(false);
+
+        if (audioEngineRef.current.recordingPurpose === 'loop') {
+            audioEngineRef.current.stopRecording();
+        }
+    }, []);
 
     const startLoopRecording = useCallback(async (lengthBars) => {
         const ac = audioEngineRef.current?.audioContext;
         if (!ac) return;
+        if (loopRecordTimeoutRef.current || audioEngineRef.current.isRecordingAudio()) return;
         
         const loopDur = lengthBars * beatsPerBar * (60 / bpm);
         
-        audioEngineRef.current.startRecording();
+        const started = audioEngineRef.current.startRecording('loop');
+        if (!started) return;
+
+        const token = ++loopRecordingTokenRef.current;
         setIsOverdubbing(true);
         setBarCount(0);
         loopStartTimeRef.current = ac.currentTime;
         
-        setTimeout(async () => {
+        loopRecordTimeoutRef.current = setTimeout(async () => {
+            loopRecordTimeoutRef.current = null;
             const audioBuffer = await audioEngineRef.current.stopRecording();
-            if (audioBuffer) {
+            if (token === loopRecordingTokenRef.current && audioBuffer) {
                 setLoopBuffers(prev => [...prev, audioBuffer]);
                 console.log('Recorded loop buffer, duration:', audioBuffer.duration);
             }
-            setIsOverdubbing(false);
+            if (token === loopRecordingTokenRef.current) {
+                setIsOverdubbing(false);
+            }
         }, loopDur * 1000);
         
     }, [beatsPerBar, bpm]);
+
+    const stopPerformancePlayback = useCallback(() => {
+        playbackTimeoutsRef.current.forEach(clearTimeout);
+        playbackTimeoutsRef.current = [];
+        audioEngineRef.current.stopAllImmediately();
+        setIsPlaying(false);
+    }, []);
 
     const playRecording = useCallback(() => {
         if (!recordedEvents.length) return;
         const ac = audioEngineRef.current?.audioContext;
         if (!ac) return;
 
+        stopPerformancePlayback();
         setIsPlaying(true);
-        const startTime = ac.currentTime;
+        const sample = currentVoice === 'sample' ? sampleData : null;
 
         recordedEvents.forEach(ev => {
             const delay = ev.time * 1000;
-            setTimeout(() => {
+            const timeout = setTimeout(() => {
                 if (ev.type === "noteOn") {
-                    audioEngineRef.current.noteOn(ev.note, ev.velocity);
+                    audioEngineRef.current.noteOn(ev.note, ev.velocity, false, sample);
                 } else if (ev.type === "noteOff") {
                     audioEngineRef.current.noteOff(ev.note);
                 }
             }, delay);
+            playbackTimeoutsRef.current.push(timeout);
         });
 
         const total = recordedEvents.at(-1)?.time || 0;
-        setTimeout(() => setIsPlaying(false), (total + 0.2) * 1000);
-    }, [recordedEvents]);
+        const endTimeout = setTimeout(() => {
+            audioEngineRef.current.stopAllImmediately();
+            playbackTimeoutsRef.current = [];
+            setIsPlaying(false);
+        }, (total + 0.35) * 1000);
+        playbackTimeoutsRef.current.push(endTimeout);
+    }, [recordedEvents, stopPerformancePlayback, currentVoice, sampleData]);
 
     const playChord = useCallback((root, quality) => {
         const engine = audioEngineRef.current;
@@ -2154,6 +2754,7 @@ function App() {
         engine.stopAllImmediately();
         
         currentChordRef.current = null;
+        activeChordPointerIdRef.current = null;
         setCurrentChord(null);
         setActiveChordButton(null);
         setActiveStrumZones(new Set());
@@ -2174,15 +2775,84 @@ function App() {
     const handleChordPointerDown = useCallback((e, root, quality) => {
         e.preventDefault();
         e.currentTarget.setPointerCapture?.(e.pointerId);
+
+        if (chordDragSwitch) {
+            const order = ++chordPointerOrderRef.current;
+            chordPointersRef.current.set(e.pointerId, { root, quality, order });
+            activeChordPointerIdRef.current = e.pointerId;
+            playChord(root, quality);
+            return;
+        }
         
         chordPointersRef.current.set(e.pointerId, { root, quality });
         
         playChord(root, quality);
-    }, [playChord]);
+    }, [playChord, chordDragSwitch]);
+
+    const getChordPadFromPoint = useCallback((x, y) => {
+        const el = document.elementFromPoint(x, y);
+        const pad = el?.closest?.('.chord-button');
+        if (!pad) return null;
+        const root = pad.dataset.root;
+        const quality = pad.dataset.quality;
+        return root && quality ? { root, quality } : null;
+    }, []);
+
+    const playLatestHeldChord = useCallback(() => {
+        let latestId = null;
+        let latest = null;
+
+        for (const [pid, pointer] of chordPointersRef.current.entries()) {
+            if (!latest || pointer.order > latest.order) {
+                latestId = pid;
+                latest = pointer;
+            }
+        }
+
+        activeChordPointerIdRef.current = latestId;
+
+        if (latest) {
+            playChord(latest.root, latest.quality);
+        } else if (!latch) {
+            releaseChord();
+        }
+    }, [playChord, releaseChord, latch]);
+
+    const handleChordPointerMove = useCallback((e) => {
+        if (!chordDragSwitch) return;
+        e.preventDefault();
+
+        const pointer = chordPointersRef.current.get(e.pointerId);
+        if (!pointer) return;
+
+        const next = getChordPadFromPoint(e.clientX, e.clientY);
+        if (!next) return;
+
+        const changed = pointer.root !== next.root || pointer.quality !== next.quality;
+        if (!changed) return;
+
+        pointer.root = next.root;
+        pointer.quality = next.quality;
+        chordPointersRef.current.set(e.pointerId, pointer);
+
+        if (activeChordPointerIdRef.current === e.pointerId) {
+            playChord(next.root, next.quality);
+        }
+    }, [chordDragSwitch, getChordPadFromPoint, playChord]);
 
     const handleChordPointerUp = useCallback((e) => {
         e.preventDefault();
         e.currentTarget.releasePointerCapture?.(e.pointerId);
+
+        if (chordDragSwitch) {
+            const wasActive = activeChordPointerIdRef.current === e.pointerId;
+            chordPointersRef.current.delete(e.pointerId);
+
+            if (wasActive) {
+                playLatestHeldChord();
+            }
+            return;
+        }
         
         chordPointersRef.current.delete(e.pointerId);
         
@@ -2199,11 +2869,21 @@ function App() {
             
             releaseChord();
         }
-    }, [releaseChord, latch, strumPointers, recordEvent]);
+    }, [releaseChord, latch, strumPointers, recordEvent, chordDragSwitch, playLatestHeldChord]);
 
     const handleChordPointerCancel = useCallback((e) => {
         e.preventDefault();
         e.currentTarget.releasePointerCapture?.(e.pointerId);
+
+        if (chordDragSwitch) {
+            const wasActive = activeChordPointerIdRef.current === e.pointerId;
+            chordPointersRef.current.delete(e.pointerId);
+
+            if (wasActive) {
+                playLatestHeldChord();
+            }
+            return;
+        }
         
         chordPointersRef.current.delete(e.pointerId);
         
@@ -2220,7 +2900,7 @@ function App() {
             
             releaseChord();
         }
-    }, [releaseChord, latch, strumPointers, recordEvent]);
+    }, [releaseChord, latch, strumPointers, recordEvent, chordDragSwitch, playLatestHeldChord]);
 
     const handleStrumPointerDown = useCallback((e) => {
         e.preventDefault();
@@ -2349,7 +3029,7 @@ function App() {
     const handleClearLoop = useCallback(() => {
         // Stop looping and overdubbing
         setIsLooping(false);
-        setIsOverdubbing(false);
+        cancelLoopRecording();
         
         // Clear all loop buffers and events
         setLoopBuffers([]);
@@ -2372,7 +3052,7 @@ function App() {
         
         // Close the confirmation dialog
         setIsClearLoopConfirmOpen(false);
-    }, [loopStartedMetronome, cancelCountdown]);
+    }, [loopStartedMetronome, cancelCountdown, cancelLoopRecording]);
 
     if (showIOSOverlay) {
         return React.createElement(IOSStartOverlay, { onStart: handleIOSStart });
@@ -2386,12 +3066,13 @@ function App() {
                     shouldStartTutorialAfterAboutRef.current = false;
                     setTutorialStepIndex(0);
                 }
-            }
+            },
+            fullscreenMessage
         });
     }
 
     return React.createElement('div', {
-        className: 'h-screen flex flex-col overflow-hidden'
+        className: 'app-shell flex flex-col overflow-hidden'
     },
         React.createElement('div', {
             className: 'top-bar flex-shrink-0 px-2 py-1 flex items-center justify-between bg-cosmic-panel'
@@ -2401,8 +3082,8 @@ function App() {
             },
                 React.createElement('button', {
                     className: 'fullscreen-btn',
-                    title: 'fullscreen mode',
-                    onClick: () => setShowAbout(true),
+                    title: isFullscreenActive ? 'exit fullscreen' : 'fullscreen mode',
+                    onClick: handleFullscreenClick,
                     style: {
                         fontSize: '1.2em',
                         marginRight: '8px',
@@ -2420,7 +3101,7 @@ function App() {
                     className: 'logo-text text-sm font-bold bg-gradient-to-r from-cosmic-glow via-cosmic-secondary to-cosmic-tertiary bg-clip-text text-transparent cursor-pointer',
                     onClick: () => setShowAbout(true),
                     style: { userSelect: 'none' }
-                }, 'Chordysol'),
+                }, 'Chordynaut'),
                 countdown > 0 && React.createElement('span', {
                     className: 'countdown-badge',
                     title: 'recording starts in...'
@@ -2471,22 +3152,24 @@ function App() {
                     onClick: async () => {
                         const engine = audioEngineRef.current;
                         if (!isRecording) {
-                            engine.init();
-                            const ac = engine.audioContext;
                             startCountdown(3, () => {
+                                engine.init();
+                                const ac = engine.audioContext;
                                 setRecordedEvents([]);
                                 performanceEventsRef.current = [];
                                 window.performanceWavBlob = null;
-                                engine.startRecording();
-                                setRecordStart(ac.currentTime || 0);
+                                engine.startRecording('performance');
+                                setRecordStart(ac.currentTime);
                                 setIsRecording(true);
                             });
                         } else {
                             setIsRecording(false);
-                            const audioBuffer = await engine.stopRecording();
-                            if (audioBuffer) {
-                                window.performanceWavBlob = audioBufferToWav(audioBuffer);
-                                setBundleStatus('performance recording ready for signing');
+                            if (audioEngineRef.current.recordingPurpose === 'performance') {
+                                const audioBuffer = await engine.stopRecording();
+                                window.performanceWavBlob = audioBuffer ? audioBufferToWav(audioBuffer) : null;
+                                if (audioBuffer) {
+                                    setBundleStatus('performance recording ready for signing');
+                                }
                             }
                         }
                     },
@@ -2494,8 +3177,8 @@ function App() {
                 }, '⏺'),
                 React.createElement('button', {
                     className: 'play-btn',
-                    disabled: !recordedEvents.length || isRecording || isPlaying,
-                    onClick: () => playRecording(),
+                    disabled: !isPlaying,
+                    onClick: () => stopPerformancePlayback(),
                     style: { fontSize: '0.8em', padding: '3px 6px' }
                 }, '■'),
                 React.createElement('button', {
@@ -2515,7 +3198,7 @@ function App() {
                         try {
                             await connectSolanaWallet();
                         } catch (error) {
-                            console.error('[chordysol] wallet connect failed', error);
+                            console.error('[chordynaut] wallet connect failed', error);
                             setBundleStatus(error.message || 'Unable to connect wallet.');
                             setIsDownloadOpen(true);
                         }
@@ -2590,7 +3273,7 @@ function App() {
                         } else {
                             // Stopping loop (existing behavior preserved)
                             setIsLooping(false);
-                            setIsOverdubbing(false);
+                            cancelLoopRecording();
                             setLoopBuffers([]);
                             loopEventsRef.current = [];
                             if (audioEngineRef.current.loopTimer) {
@@ -2712,6 +3395,17 @@ function App() {
                         React.createElement('option', { key: b, value: b }, `${b} bar${b > 1 ? 's' : ''}`)
                     )
                 )
+            ),
+            React.createElement('label', {
+                className: 'looplen-group',
+                style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', opacity: 0.75 }
+            },
+                React.createElement('input', {
+                    type: 'checkbox',
+                    checked: chordDragSwitch,
+                    onChange: (e) => setChordDragSwitch(e.target.checked)
+                }),
+                'drag chords'
             ),
             React.createElement('div', {
                 className: 'volume-group'
@@ -3044,7 +3738,10 @@ function App() {
                             
                             return React.createElement('button', {
                                 key: `${root}-${quality.key}`,
+                                'data-root': root,
+                                'data-quality': quality.key,
                                 onPointerDown: (e) => handleChordPointerDown(e, root, quality.key),
+                                onPointerMove: handleChordPointerMove,
                                 onPointerUp: handleChordPointerUp,
                                 onPointerCancel: handleChordPointerCancel,
                                 onContextMenu: (e) => e.preventDefault(),
@@ -3135,14 +3832,6 @@ function App() {
             )
         ),
 
-        React.createElement('div', {
-            className: 'flex-shrink-0 text-center text-xs text-gray-600 py-0.5'
-        },
-            React.createElement('span', {
-                className: 'human-made-note'
-            }, 'Chordysol: human-made music, Solana-ready provenance')
-        ),
-
         React.createElement('input', {
             ref: importInputRef,
             type: 'file',
@@ -3156,9 +3845,9 @@ function App() {
         }),
 
         tutorialStepIndex >= 0 && React.createElement(TutorialBubble, {
-            step: CHORDYSOL_TUTORIAL_STEPS[tutorialStepIndex],
+            step: CHORDYNAUT_TUTORIAL_STEPS[tutorialStepIndex],
             index: tutorialStepIndex,
-            total: CHORDYSOL_TUTORIAL_STEPS.length,
+            total: CHORDYNAUT_TUTORIAL_STEPS.length,
             anchorRect: tutorialAnchorRect,
             onNext: advanceTutorial,
             onSkip: finishTutorial

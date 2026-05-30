@@ -1,0 +1,11 @@
+{
+  "name": "Chordynaut",
+  "short_name": "Chordynaut",
+  "description": "A mobile-first chord synthesizer with Solana-ready provenance tools.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0a0a0f",
+  "theme_color": "#0a0a0f"
+}
